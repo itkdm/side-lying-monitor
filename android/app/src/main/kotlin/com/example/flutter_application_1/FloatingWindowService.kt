@@ -1,5 +1,6 @@
 package com.example.flutter_application_1
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -41,6 +42,7 @@ class FloatingWindowService : Service(), SensorEventListener {
     private var floatingView: View? = null
     private var windowParams: WindowManager.LayoutParams? = null
     private var isSideLying = false
+    private val mainHandler = Handler(Looper.getMainLooper())
     
     // 传感器相关
     private var sensorManager: SensorManager? = null
@@ -107,7 +109,7 @@ class FloatingWindowService : Service(), SensorEventListener {
         }
         
         // 创建Handler用于定时检查提醒
-        reminderCheckHandler = Handler(Looper.getMainLooper())
+        reminderCheckHandler = mainHandler
         
         ensureNotificationChannel()
     }
@@ -206,22 +208,21 @@ class FloatingWindowService : Service(), SensorEventListener {
     
     private fun startSensorListening() {
         accelerometer?.let {
-            // 使用超时WakeLock，每10分钟自动续期
-            wakeLock?.acquire(10*60*1000L /*10 minutes*/)
+            acquireWakeLock()
             sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
         }
     }
-    
-    // 定期续期WakeLock
-    private fun renewWakeLock() {
+
+    @SuppressLint("WakelockTimeout")
+    private fun acquireWakeLock() {
         wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
+            it.setReferenceCounted(false)
+            if (!it.isHeld) {
+                it.acquire()
             }
-            it.acquire(10*60*1000L)
         }
     }
-    
+
     private fun stopSensorListening() {
         sensorManager?.unregisterListener(this)
         wakeLock?.let {
@@ -265,7 +266,7 @@ class FloatingWindowService : Service(), SensorEventListener {
                     isSideLying = false
                     sideLyingSince = null
                     // 切换到主线程更新UI
-                    Handler(Looper.getMainLooper()).post {
+                    mainHandler.post {
                         updateFloatingWindowState(false)
                     }
                 }
@@ -291,7 +292,7 @@ class FloatingWindowService : Service(), SensorEventListener {
                     sideLyingSince = now
                     android.util.Log.d("FloatingWindow", "Side lying detected, updating UI")
                     // 切换到主线程更新UI
-                    Handler(Looper.getMainLooper()).post {
+                    mainHandler.post {
                         // 确保悬浮窗存在
                         if (floatingView == null && isMonitoring) {
                             android.util.Log.w("FloatingWindow", "floatingView is null, recreating...")
@@ -306,7 +307,7 @@ class FloatingWindowService : Service(), SensorEventListener {
                     isSideLying = false
                     sideLyingSince = null
                     // 切换到主线程更新UI
-                    Handler(Looper.getMainLooper()).post {
+                    mainHandler.post {
                         updateFloatingWindowState(false)
                     }
                 }
@@ -370,7 +371,6 @@ class FloatingWindowService : Service(), SensorEventListener {
                     "FloatingWindow",
                     "Currently in DND window ($dndStartMinutes-$dndEndMinutes), skip reminder"
                 )
-                sideLyingSince = now
                 return
             }
 
@@ -439,11 +439,34 @@ class FloatingWindowService : Service(), SensorEventListener {
                 .getIntExtra(EXTRA_THRESHOLD_SECONDS, thresholdSecondsCache)
                 .coerceIn(1, 300)
         }
+        if (intent.hasExtra(EXTRA_MONITORING)) {
+            val monitoring = intent.getBooleanExtra(EXTRA_MONITORING, isMonitoring)
+            handleMonitoringToggleFromSettings(monitoring)
+        }
         android.util.Log.d(
             "FloatingWindow",
             "Settings updated via broadcast: vibration=$vibrationEnabled, " +
                 "threshold=$thresholdSecondsCache, dnd=$dndStartMinutes-$dndEndMinutes"
         )
+    }
+
+    private fun handleMonitoringToggleFromSettings(enable: Boolean) {
+        if (enable) {
+            if (!isMonitoring) {
+                isMonitoring = true
+                startForegroundService()
+                showFloatingWindow()
+                startSensorListening()
+                startReminderCheck()
+            }
+        } else if (isMonitoring) {
+            isMonitoring = false
+            stopSensorListening()
+            stopReminderCheck()
+            hideFloatingWindow()
+            stopForeground(true)
+            stopSelf()
+        }
     }
 
     private fun loadSettingsFromPrefs() {
@@ -596,7 +619,9 @@ class FloatingWindowService : Service(), SensorEventListener {
                 WindowManager.LayoutParams.TYPE_PHONE
             },
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+            WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+            WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
             gravity = Gravity.TOP or Gravity.START
@@ -682,7 +707,7 @@ class FloatingWindowService : Service(), SensorEventListener {
         try {
             // 确保在主线程执行
             if (Looper.myLooper() != Looper.getMainLooper()) {
-                Handler(Looper.getMainLooper()).post {
+                mainHandler.post {
                     updateFloatingWindowState(sideLying)
                 }
                 return
@@ -748,7 +773,7 @@ class FloatingWindowService : Service(), SensorEventListener {
                 if (isMonitoring) {
                     android.util.Log.w("FloatingWindow", "UI update failed, recreating floating window")
                     hideFloatingWindow()
-                    Handler(Looper.getMainLooper()).postDelayed({
+                    mainHandler.postDelayed({
                         if (isMonitoring) {
                             showFloatingWindow()
                         }
@@ -785,6 +810,7 @@ class FloatingWindowService : Service(), SensorEventListener {
         const val ACTION_UPDATE_STATE = "com.example.flutter_application_1.UPDATE_STATE"
         const val ACTION_SETTINGS_UPDATED = "com.example.flutter_application_1.SETTINGS_UPDATED"
         const val EXTRA_IS_SIDE_LYING = "is_side_lying"
+        const val EXTRA_MONITORING = "extra_monitoring"
         const val EXTRA_VIBRATION_ENABLED = "extra_vibration_enabled"
         const val EXTRA_THRESHOLD_SECONDS = "extra_threshold_seconds"
         const val EXTRA_DND_START_MINUTES = "extra_dnd_start_minutes"

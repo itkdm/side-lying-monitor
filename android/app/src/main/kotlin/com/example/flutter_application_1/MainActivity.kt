@@ -43,6 +43,7 @@ class MainActivity : FlutterActivity() {
                 }
                 "syncSettings" -> {
                     syncSettingsToService(
+                        monitoring = call.argument<Boolean>("monitoring") ?: true,
                         vibrationEnabled = call.argument<Boolean>("vibrationEnabled") ?: true,
                         thresholdSeconds = call.argument<Int>("thresholdSeconds") ?: 5,
                         dndStartMinutes = call.argument<Int>("dndStartMinutes") ?: (23 * 60),
@@ -116,12 +117,14 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun syncSettingsToService(
+        monitoring: Boolean,
         vibrationEnabled: Boolean,
         thresholdSeconds: Int,
         dndStartMinutes: Int,
         dndEndMinutes: Int
     ) {
         val intent = Intent(FloatingWindowService.ACTION_SETTINGS_UPDATED).apply {
+            putExtra(FloatingWindowService.EXTRA_MONITORING, monitoring)
             putExtra(FloatingWindowService.EXTRA_VIBRATION_ENABLED, vibrationEnabled)
             putExtra(FloatingWindowService.EXTRA_THRESHOLD_SECONDS, thresholdSeconds)
             putExtra(FloatingWindowService.EXTRA_DND_START_MINUTES, dndStartMinutes)
