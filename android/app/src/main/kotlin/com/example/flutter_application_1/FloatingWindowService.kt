@@ -88,8 +88,7 @@ class FloatingWindowService : Service(), SensorEventListener {
         // 创建Handler用于定时检查提醒
         reminderCheckHandler = Handler(Looper.getMainLooper())
         
-        // 创建通知渠道
-        createNotificationChannel()
+        ensureNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -148,10 +147,12 @@ class FloatingWindowService : Service(), SensorEventListener {
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
+        ensureNotificationChannel()
+
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("枕边哨")
             .setContentText("正在后台监测你的姿势")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setSmallIcon(R.mipmap.ic_launcher)
             .setContentIntent(pendingIntent)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -161,19 +162,23 @@ class FloatingWindowService : Service(), SensorEventListener {
         startForeground(NOTIFICATION_ID, notification)
     }
     
-    private fun createNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "姿势监测服务",
-                NotificationManager.IMPORTANCE_LOW
-            ).apply {
-                description = "用于后台监测用户姿势"
-                setShowBadge(false)
-            }
-            val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+    private fun ensureNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
+        val notificationManager = getSystemService(NotificationManager::class.java) ?: return
+        val existing = notificationManager.getNotificationChannel(CHANNEL_ID)
+        if (existing != null) return
+
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "姿势监测服务",
+            NotificationManager.IMPORTANCE_LOW
+        ).apply {
+            description = "用于后台监测用户姿势"
+            setShowBadge(false)
+            enableLights(false)
+            enableVibration(false)
         }
+        notificationManager.createNotificationChannel(channel)
     }
     
     private fun startSensorListening() {
@@ -473,10 +478,12 @@ class FloatingWindowService : Service(), SensorEventListener {
                 PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
             )
             
+            ensureNotificationChannel()
+
             val notification = NotificationCompat.Builder(this, CHANNEL_ID)
                 .setContentTitle("姿势不对哦～")
                 .setContentText("你可能正在侧躺玩手机，注意颈椎健康哦～")
-                .setSmallIcon(android.R.drawable.ic_dialog_info)
+                .setSmallIcon(R.mipmap.ic_launcher)
                 .setContentIntent(pendingIntent)
                 .setAutoCancel(true)
                 .setPriority(NotificationCompat.PRIORITY_HIGH)

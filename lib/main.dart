@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_application_1/services/settings_repository.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vibration/vibration.dart';
@@ -218,9 +219,14 @@ void onStart(ServiceInstance service) async {
   // 定时检查提醒
   checkTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
     try {
+      try {
+        // ignore: invalid_use_of_visible_for_testing_member, deprecated_member_use
+        await prefs.reload();
+      } catch (_) {
+        // 某些平台不支持 reload，忽略即可
+      }
       // 检查监测状态是否仍然开启
-      final currentPrefs = await SharedPreferences.getInstance();
-      final isMonitoring = currentPrefs.getBool('monitoring') ?? false;
+      final isMonitoring = prefs.getBool('monitoring') ?? false;
       if (!isMonitoring) {
         // 监测已关闭，停止服务
         accelSub?.cancel();
@@ -234,10 +240,10 @@ void onStart(ServiceInstance service) async {
       final now = DateTime.now();
       
       // 重新读取设置（可能用户修改了）
-      final currentVibrationEnabled = currentPrefs.getBool('vibration_enabled') ?? true;
-      final currentThresholdSeconds = currentPrefs.getInt('threshold_seconds') ?? 5;
-      final dndStartMinutes = currentPrefs.getInt('dnd_start_minutes') ?? 23 * 60;
-      final dndEndMinutes = currentPrefs.getInt('dnd_end_minutes') ?? 7 * 60;
+      final currentVibrationEnabled = prefs.getBool('vibration_enabled') ?? true;
+      final currentThresholdSeconds = prefs.getInt('threshold_seconds') ?? 5;
+      final dndStartMinutes = prefs.getInt('dnd_start_minutes') ?? 23 * 60;
+      final dndEndMinutes = prefs.getInt('dnd_end_minutes') ?? 7 * 60;
       
       // 更新本地变量
       vibrationEnabled = currentVibrationEnabled;
@@ -362,6 +368,10 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   // UI & 导航
   int _currentIndex = 0;
 
+  final SettingsRepository _settingsRepo = SettingsRepository.instance;
+  late final VoidCallback _settingsListener;
+  bool _settingsReady = false;
+
   // 设置与状态
   bool _monitoring = false;
   bool _vibrationEnabled = true;
@@ -406,9 +416,10 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _settingsListener = _handleSettingsChanged;
     _initializeNotifications();
     _checkOverlayPermission();
-    _loadPersistedState();
+    _initSettings();
   }
   
   /// 检查悬浮窗权限
@@ -444,9 +455,67 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     }
   }
 
+  Future<void> _initSettings() async {
+    await _settingsRepo.init();
+    _settingsRepo.addListener(_settingsListener);
+    if (!mounted) return;
+    _settingsReady = true;
+    _applySettingsSnapshot();
+    _handleMonitoringPipeline(_monitoring);
+  }
+
+  void _handleSettingsChanged() {
+    if (!mounted) return;
+    final bool repoMonitoring = _settingsRepo.monitoring;
+    final bool monitoringChanged = repoMonitoring != _monitoring;
+    _applySettingsSnapshot();
+    if (monitoringChanged) {
+      _handleMonitoringPipeline(repoMonitoring);
+    }
+  }
+
+  void _applySettingsSnapshot() {
+    setState(() {
+      _monitoring = _settingsRepo.monitoring;
+      _vibrationEnabled = _settingsRepo.vibrationEnabled;
+      _thresholdSeconds = _settingsRepo.thresholdSeconds;
+      _dndStart = TimeOfDay(
+        hour: _settingsRepo.dndStartMinutes ~/ 60,
+        minute: _settingsRepo.dndStartMinutes % 60,
+      );
+      _dndEnd = TimeOfDay(
+        hour: _settingsRepo.dndEndMinutes ~/ 60,
+        minute: _settingsRepo.dndEndMinutes % 60,
+      );
+      _today = _settingsRepo.today;
+      _todayRemindCount = _settingsRepo.todayRemindCount;
+    });
+  }
+
+  void _handleMonitoringPipeline(bool monitoringEnabled) {
+    if (monitoringEnabled) {
+      if (!_isInBackground && _accelSub == null) {
+        _startSensorListening();
+      }
+      if (_isInBackground && !_isFloatingWindowVisible) {
+        unawaited(_showFloatingWindow());
+      }
+    } else {
+      if (_accelSub != null) {
+        _stopSensorListening();
+      }
+      if (_isFloatingWindowVisible) {
+        unawaited(_hideFloatingWindow());
+      }
+    }
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    if (_settingsReady) {
+      _settingsRepo.removeListener(_settingsListener);
+    }
     _accelSub?.cancel();
     _checkTimer?.cancel();
     _lastG = null;
@@ -484,37 +553,10 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
         _startSensorListening();
       }
       // 重新加载统计数据（可能原生服务更新了）
-      _loadPersistedState();
+      _reloadSettingsFromDisk();
     }
   }
   
-  /// 检查并恢复监测状态
-  Future<void> _checkAndRestoreMonitoringState() async {
-    final prefs = await SharedPreferences.getInstance();
-    final isMonitoring = prefs.getBool('monitoring') ?? false;
-    
-    if (isMonitoring && _monitoring) {
-      // 监测状态仍然开启，启动前台监测
-      _startSensorListening();
-    } else if (!isMonitoring && _monitoring) {
-      // 监测状态已被关闭，同步状态
-      setState(() {
-        _monitoring = false;
-      });
-      _stopSensorListening();
-      // 隐藏悬浮窗
-      if (_isFloatingWindowVisible) {
-        _hideFloatingWindow();
-      }
-    } else if (isMonitoring && !_monitoring) {
-      // 监测状态被开启（可能在其他地方），同步状态
-      setState(() {
-        _monitoring = true;
-      });
-      _startSensorListening();
-    }
-  }
-
   /// 显示悬浮窗（使用原生悬浮窗）
   Future<void> _showFloatingWindow() async {
     if (_isFloatingWindowVisible || !_monitoring) return;
@@ -598,67 +640,9 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     );
   }
 
-  Future<void> _loadPersistedState() async {
-    final prefs = await SharedPreferences.getInstance();
-
-    // 为了拿到原生服务写入的最新统计，尽可能从磁盘刷新一次
-    try {
-      // ignore: deprecated_member_use, invalid_use_of_visible_for_testing_member
-      await prefs.reload();
-    } catch (_) {
-      // 低版本 shared_preferences 可能不支持 reload，忽略即可
-    }
-
-    final now = DateTime.now();
-    final todayKey = '${now.year}-${now.month}-${now.day}';
-    final storedDate = prefs.getString('today_date');
-    final storedCount =
-        storedDate == todayKey ? prefs.getInt('today_remind_count') ?? 0 : 0;
-
-    // 调试日志：观察 Dart 端实际从 SharedPreferences 读到的值
-    // 请在调试时关注 tag 为 "PostureGuardian" 的日志
-    // ignore: avoid_print
-    print(
-        '[PostureGuardian] _loadPersistedState -> todayKey=$todayKey, storedDate=$storedDate, storedCount=$storedCount');
-
-    if (!mounted) return;
-
-    setState(() {
-      // 恢复监测状态
-      _monitoring = prefs.getBool('monitoring') ?? false;
-      
-      _vibrationEnabled = prefs.getBool('vibration_enabled') ?? true;
-      _thresholdSeconds = prefs.getInt('threshold_seconds') ?? 5;
-
-      final startMinutes = prefs.getInt('dnd_start_minutes') ?? 23 * 60;
-      final endMinutes = prefs.getInt('dnd_end_minutes') ?? 7 * 60;
-      _dndStart = TimeOfDay(hour: startMinutes ~/ 60, minute: startMinutes % 60);
-      _dndEnd = TimeOfDay(hour: endMinutes ~/ 60, minute: endMinutes % 60);
-
-      _today = now;
-      _todayRemindCount = storedCount;
-    });
-    
-      // 如果之前是监测状态，恢复监测
-    if (_monitoring) {
-      _isInBackground = false;
-      _startSensorListening();
-    }
-  }
-
-  Future<void> _persistSettings() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('vibration_enabled', _vibrationEnabled);
-    await prefs.setInt('threshold_seconds', _thresholdSeconds);
-    await prefs.setInt('dnd_start_minutes', _dndStart.hour * 60 + _dndStart.minute);
-    await prefs.setInt('dnd_end_minutes', _dndEnd.hour * 60 + _dndEnd.minute);
-  }
-
-  Future<void> _persistTodayStats() async {
-    final prefs = await SharedPreferences.getInstance();
-    final todayKey = '${_today.year}-${_today.month}-${_today.day}';
-    await prefs.setString('today_date', todayKey);
-    await prefs.setInt('today_remind_count', _todayRemindCount);
+  Future<void> _reloadSettingsFromDisk() async {
+    if (!_settingsReady) return;
+    await _settingsRepo.refreshFromDisk();
   }
 
   /// 通用轻微震动（尊重设置开关）
@@ -672,36 +656,17 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   }
 
   void _toggleMonitoring() {
+    final next = !_monitoring;
     setState(() {
-      _monitoring = !_monitoring;
+      _monitoring = next;
     });
-    
-    // 持久化监测状态
-    _persistMonitoringState();
-
-    if (_monitoring) {
-      // 开始监测时给一个轻微提示震动
+    if (next) {
       _vibrateOnce(durationMs: 60);
-      _startSensorListening();
-      // 如果应用在后台，显示悬浮窗
-      if (_isInBackground && !_isFloatingWindowVisible) {
-        _showFloatingWindow();
-      }
-    } else {
-      _stopSensorListening();
-      // 隐藏悬浮窗
-      if (_isFloatingWindowVisible) {
-        _hideFloatingWindow();
-      }
     }
+    _handleMonitoringPipeline(next);
+    unawaited(_settingsRepo.setMonitoring(next));
   }
   
-  /// 持久化监测状态
-  Future<void> _persistMonitoringState() async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool('monitoring', _monitoring);
-  }
-
   void _startSensorListening() {
     _accelSub?.cancel();
     _checkTimer?.cancel();
@@ -810,7 +775,9 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
 
   void _stopSensorListening() {
     _accelSub?.cancel();
+    _accelSub = null;
     _checkTimer?.cancel();
+    _checkTimer = null;
     _isSideLying = false;
     _sideLyingSince = null;
     _isReminderDialogShowing = false;
@@ -842,7 +809,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
         _today = now;
         _todayRemindCount = 0;
       });
-      await _persistTodayStats();
+      await _settingsRepo.resetTodayIfNeeded(now);
     }
 
     if (_isInDnd(now)) return;
@@ -856,7 +823,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       setState(() {
         _todayRemindCount += 1;
       });
-      await _persistTodayStats();
+      await _settingsRepo.incrementTodayRemindCount(at: now);
       
       // 继续震动提醒（如果可用且开启）
       if (_vibrationEnabled &&
@@ -876,7 +843,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     setState(() {
       _todayRemindCount += 1;
     });
-    await _persistTodayStats();
+    await _settingsRepo.incrementTodayRemindCount(at: now);
 
     // 震动（如果可用且开启）
     if (_vibrationEnabled &&
@@ -996,28 +963,30 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     setState(() {
       _vibrationEnabled = value;
     });
-    _persistSettings();
+    unawaited(_settingsRepo.setVibrationEnabled(value));
   }
 
   void _updateThreshold(double value) {
     setState(() {
       _thresholdSeconds = value.round();
     });
-    _persistSettings();
+    unawaited(_settingsRepo.setThresholdSeconds(_thresholdSeconds));
   }
 
   void _updateDndStart(TimeOfDay value) {
     setState(() {
       _dndStart = value;
     });
-    _persistSettings();
+    final minutes = value.hour * 60 + value.minute;
+    unawaited(_settingsRepo.setDndStartMinutes(minutes));
   }
 
   void _updateDndEnd(TimeOfDay value) {
     setState(() {
       _dndEnd = value;
     });
-    _persistSettings();
+    final minutes = value.hour * 60 + value.minute;
+    unawaited(_settingsRepo.setDndEndMinutes(minutes));
   }
 
   @override
