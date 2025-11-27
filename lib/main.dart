@@ -1,76 +1,17 @@
 import 'dart:async';
-import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_application_1/pages/home_page.dart';
+import 'package:flutter_application_1/pages/settings_page.dart';
+import 'package:flutter_application_1/services/floating_window_manager.dart';
+import 'package:flutter_application_1/services/permission_coordinator.dart';
 import 'package:flutter_application_1/services/posture_monitor.dart';
 import 'package:flutter_application_1/services/settings_repository.dart';
 import 'package:sensors_plus/sensors_plus.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vibration/vibration.dart';
-
-/// 原生悬浮窗管理类
-class FloatingWindowManager {
-  static const MethodChannel _channel = MethodChannel('com.example.flutter_application_1/floating_window');
-
-  /// 检查悬浮窗权限
-  static Future<bool> checkOverlayPermission() async {
-    try {
-      final result = await _channel.invokeMethod<bool>('checkOverlayPermission');
-      return result ?? false;
-    } catch (e) {
-      print('检查悬浮窗权限失败: $e');
-      return false;
-    }
-  }
-
-  /// 请求悬浮窗权限
-  static Future<void> requestOverlayPermission() async {
-    try {
-      await _channel.invokeMethod('requestOverlayPermission');
-    } catch (e) {
-      print('请求悬浮窗权限失败: $e');
-    }
-  }
-
-  /// 显示悬浮窗
-  static Future<bool> showFloatingWindow() async {
-    try {
-      final result = await _channel.invokeMethod<bool>('showFloatingWindow');
-      return result ?? false;
-    } catch (e) {
-      print('显示悬浮窗失败: $e');
-      return false;
-    }
-  }
-
-  /// 隐藏悬浮窗
-  static Future<bool> hideFloatingWindow() async {
-    try {
-      final result = await _channel.invokeMethod<bool>('hideFloatingWindow');
-      return result ?? false;
-    } catch (e) {
-      print('隐藏悬浮窗失败: $e');
-      return false;
-    }
-  }
-
-  /// 更新悬浮窗状态
-  static Future<bool> updateFloatingWindowState(bool isSideLying) async {
-    try {
-      final result = await _channel.invokeMethod<bool>(
-        'updateFloatingWindowState',
-        {'isSideLying': isSideLying},
-      );
-      return result ?? false;
-    } catch (e) {
-      print('更新悬浮窗状态失败: $e');
-      return false;
-    }
-  }
-}
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -90,7 +31,6 @@ class PostureGuardianApp extends StatelessWidget {
       seedColor: primaryColor,
       brightness: Brightness.dark,
       primary: primaryColor,
-      background: background,
       surface: const Color(0xFF22232A),
     );
 
@@ -141,6 +81,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   final SettingsRepository _settingsRepo = SettingsRepository.instance;
   late final VoidCallback _settingsListener;
   bool _settingsReady = false;
+  final PermissionCoordinator _permissionCoordinator = PermissionCoordinator();
 
   // 设置与状态
   bool _monitoring = false;
@@ -155,12 +96,14 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
 
   // 传感器 & 姿态检测
   late final PostureMonitor _postureMonitor =
-      PostureMonitor(sensorStream: accelerometerEvents);
+      PostureMonitor(sensorStream: accelerometerEventStream());
   StreamSubscription<PostureState>? _postureSubscription;
   bool _isSideLying = false;
   // 最近一次确认“稳定侧躺”起始时间（用于健康提醒计时）
   DateTime? _sideLyingSince;
   Timer? _checkTimer;
+
+  static const List<int> _reminderVibrationPattern = [0, 120, 60, 120];
 
   // 通知服务
   final FlutterLocalNotificationsPlugin _notifications =
@@ -171,7 +114,6 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   
   // 悬浮窗相关（使用原生悬浮窗）
   bool _isFloatingWindowVisible = false;
-  bool _hasOverlayPermission = false;
 
   @override
   void initState() {
@@ -179,18 +121,10 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _settingsListener = _handleSettingsChanged;
     _initializeNotifications();
-    _checkOverlayPermission();
+    unawaited(_permissionCoordinator.init());
     _initSettings();
   }
   
-  /// 检查悬浮窗权限
-  Future<void> _checkOverlayPermission() async {
-    final hasPermission = await FloatingWindowManager.checkOverlayPermission();
-    setState(() {
-      _hasOverlayPermission = hasPermission;
-    });
-  }
-
   Future<void> _initializeNotifications() async {
     const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
     const iosSettings = DarwinInitializationSettings();
@@ -234,6 +168,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       _handleMonitoringPipeline(repoMonitoring);
     }
   }
+
 
   void _applySettingsSnapshot() {
     setState(() {
@@ -322,20 +257,9 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   Future<void> _showFloatingWindow() async {
     if (_isFloatingWindowVisible || !_monitoring) return;
     
-    // 检查权限
-    if (!_hasOverlayPermission) {
-      // 请求权限
-      await FloatingWindowManager.requestOverlayPermission();
-      // 重新检查权限
-      await _checkOverlayPermission();
-      if (!_hasOverlayPermission) {
-        // 权限未授予，显示提示
-        if (mounted) {
-          _showPermissionDialog();
-        }
-        return;
-      }
-    }
+    final granted =
+        await _permissionCoordinator.ensureOverlayPermission(context);
+    if (!granted) return;
     
     // 显示原生悬浮窗
     final success = await FloatingWindowManager.showFloatingWindow();
@@ -366,54 +290,26 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     }
   }
   
-  /// 显示权限请求对话框
-  void _showPermissionDialog() {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: const Color(0xFF22232A),
-        title: const Text(
-          '需要悬浮窗权限',
-          style: TextStyle(color: Colors.white),
-        ),
-        content: const Text(
-          '为了在后台持续监测，需要授予悬浮窗权限。请在设置中允许"在其他应用上层显示"。',
-          style: TextStyle(color: Colors.white70),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('取消'),
-          ),
-          TextButton(
-            onPressed: () async {
-              Navigator.of(context).pop();
-              await FloatingWindowManager.requestOverlayPermission();
-              await _checkOverlayPermission();
-            },
-            child: const Text(
-              '去设置',
-              style: TextStyle(color: Color(0xFF4361EE)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
   Future<void> _reloadSettingsFromDisk() async {
     if (!_settingsReady) return;
     await _settingsRepo.refreshFromDisk();
   }
 
   /// 通用轻微震动（尊重设置开关）
-  void _vibrateOnce({int durationMs = 80}) {
+  Future<void> _vibrateOnce({int durationMs = 80}) async {
     if (!_vibrationEnabled) return;
-    Vibration.hasVibrator().then((hasVibrator) {
-      if (hasVibrator == true) {
-        Vibration.vibrate(duration: durationMs);
-      }
-    });
+    final hasVibrator = await Vibration.hasVibrator();
+    if (hasVibrator) {
+      await Vibration.vibrate(duration: durationMs);
+    }
+  }
+
+  Future<void> _vibratePattern(List<int> pattern) async {
+    if (!_vibrationEnabled) return;
+    final hasVibrator = await Vibration.hasVibrator();
+    if (hasVibrator) {
+      await Vibration.vibrate(pattern: pattern);
+    }
   }
 
   void _toggleMonitoring() {
@@ -422,7 +318,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       _monitoring = next;
     });
     if (next) {
-      _vibrateOnce(durationMs: 60);
+      unawaited(_vibrateOnce(durationMs: 60));
     }
     _handleMonitoringPipeline(next);
     unawaited(_settingsRepo.setMonitoring(next));
@@ -447,7 +343,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       _sideLyingSince = state.sideLyingSince;
     });
     if (state.isSideLying && !previous) {
-      _vibrateOnce(durationMs: 50);
+      unawaited(_vibrateOnce(durationMs: 50));
     }
     if (!_isSideLying) {
       _sideLyingSince = null;
@@ -509,10 +405,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       await _settingsRepo.incrementTodayRemindCount(at: now);
       
       // 继续震动提醒（如果可用且开启）
-      if (_vibrationEnabled &&
-          ((await Vibration.hasVibrator()) ?? false)) {
-        Vibration.vibrate(pattern: [0, 120, 60, 120]);
-      }
+      await _vibratePattern(_reminderVibrationPattern);
       // 重置计时起点，等待下次阈值周期
       _sideLyingSince = now;
       return;
@@ -529,10 +422,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     await _settingsRepo.incrementTodayRemindCount(at: now);
 
     // 震动（如果可用且开启）
-    if (_vibrationEnabled &&
-        ((await Vibration.hasVibrator()) ?? false)) {
-      Vibration.vibrate(pattern: [0, 120, 60, 120]);
-    }
+    await _vibratePattern(_reminderVibrationPattern);
 
     // 根据 App 是否在后台，选择不同的提醒方式
     if (_isInBackground || !mounted) {
@@ -586,7 +476,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       context: context,
       barrierDismissible: true,
       barrierLabel: '提醒',
-      pageBuilder: (context, _, __) {
+      pageBuilder: (context, animation, secondaryAnimation) {
         return const SizedBox.shrink();
       },
       transitionBuilder: (context, animation, secondary, child) {
@@ -601,7 +491,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
               child: BackdropFilter(
                 filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
                 child: Container(
-                  color: Colors.black.withOpacity(0.4),
+                  color: Colors.black.withValues(alpha: 0.4),
                 ),
               ),
             ),
@@ -610,7 +500,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
                 opacity: curved,
                 child: ScaleTransition(
                   scale: Tween<double>(begin: 0.9, end: 1.0).animate(curved),
-                  child: _ReminderCard(
+                  child: ReminderDialog(
                     onClose: () {
                       Navigator.of(context).pop();
                       // 用户点击"知道了"后，重置状态，允许下次提醒
@@ -708,642 +598,6 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   }
 }
 
-/// 首页：核心监测控制 + 今日提醒次数
-class HomePage extends StatelessWidget {
-  const HomePage({
-    super.key,
-    required this.monitoring,
-    required this.isSideLying,
-    required this.remindCount,
-    required this.thresholdSeconds,
-    required this.onToggleMonitoring,
-  });
-
-  final bool monitoring;
-  final bool isSideLying;
-  final int remindCount;
-  final int thresholdSeconds;
-  final VoidCallback onToggleMonitoring;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    const primary = Color(0xFF4361EE);
-    const haloColor = Color(0xFF6BAA75); // 鼠尾草绿
-
-    return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent, // 透明状态栏
-        statusBarIconBrightness: Brightness.light, // 浅色图标（白色）
-        statusBarBrightness: Brightness.dark, // iOS 状态栏样式
-        systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜色
-        systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜色
-      ),
-      child: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFF1B1B1E), Color(0xFF121218)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
-        child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-          child: Column(
-            children: [
-              const SizedBox(height: 16),
-              // 顶部标题居中
-              Text(
-                '枕边哨',
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                  fontSize: 24,
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 40),
-
-              // 中间大按钮区域
-              Expanded(
-                child: Center(
-                  child: _BreathingButton(
-                    active: monitoring,
-                    onTap: onToggleMonitoring,
-                    primary: primary,
-                    haloColor: haloColor,
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 24),
-
-              // 今日提醒次数卡片 - 美化样式
-              _GlassCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            Container(
-                              padding: const EdgeInsets.all(8),
-                              decoration: BoxDecoration(
-                                color: primary.withOpacity(0.2),
-                                borderRadius: BorderRadius.circular(10),
-                              ),
-                              child: Icon(
-                                Icons.notifications_active_rounded,
-                                color: primary,
-                                size: 20,
-                              ),
-                            ),
-                            const SizedBox(width: 12),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(
-                                  '今日提醒次数',
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: Colors.white70,
-                                    fontSize: 12,
-                                  ),
-                                ),
-                                const SizedBox(height: 4),
-                                Text(
-                                  '$remindCount 次',
-                                  style: theme.textTheme.headlineMedium?.copyWith(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.bold,
-                                    fontSize: 28,
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.1),
-                            borderRadius: BorderRadius.circular(12),
-                            border: Border.all(
-                              color: Colors.white.withOpacity(0.2),
-                            ),
-                          ),
-                          child: Column(
-                            crossAxisAlignment: CrossAxisAlignment.end,
-                            children: [
-                              Text(
-                                '触发条件',
-                                style: theme.textTheme.bodySmall?.copyWith(
-                                  color: Colors.white70,
-                                  fontSize: 11,
-                                ),
-                              ),
-                              const SizedBox(height: 2),
-                              Text(
-                                '≥ $thresholdSeconds 秒',
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.w600,
-                                  fontSize: 14,
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // 持续侧躺状态实时提示（只要保持侧躺就一直显示）- 美化样式
-              if (monitoring && isSideLying)
-                _GlassCard(
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.all(10),
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            colors: [
-                              const Color(0xFFB5179E).withOpacity(0.3),
-                              const Color(0xFFB5179E).withOpacity(0.1),
-                            ],
-                          ),
-                          borderRadius: BorderRadius.circular(12),
-                        ),
-                        child: const Icon(
-                          Icons.bedtime_rounded,
-                          color: Color(0xFFB5179E),
-                          size: 24,
-                        ),
-                      ),
-                      const SizedBox(width: 14),
-                      Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            Row(
-                              children: [
-                                Text(
-                                  '正在检测侧躺姿势',
-                                  style: theme.textTheme.titleSmall?.copyWith(
-                                    color: Colors.white,
-                                    fontWeight: FontWeight.w700,
-                                    fontSize: 15,
-                                  ),
-                                ),
-                                const SizedBox(width: 6),
-                                Container(
-                                  width: 8,
-                                  height: 8,
-                                  decoration: BoxDecoration(
-                                    color: const Color(0xFFB5179E),
-                                    shape: BoxShape.circle,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: 6),
-                            Text(
-                              '保持当前姿势时，此提示会一直显示，超过设定时长将弹出健康提醒。',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: Colors.white70,
-                                fontSize: 12,
-                                height: 1.4,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-              const SizedBox(height: 16),
-            ],
-          ),
-        ),
-      ),
-      ),
-    );
-  }
-}
-
-/// 设置页：震动开关、时间阈值、免打扰时段
-class SettingsPage extends StatelessWidget {
-  const SettingsPage({
-    super.key,
-    required this.vibrationEnabled,
-    required this.thresholdSeconds,
-    required this.dndStart,
-    required this.dndEnd,
-    required this.onVibrationChanged,
-    required this.onThresholdChanged,
-    required this.onDndStartChanged,
-    required this.onDndEndChanged,
-  });
-
-  final bool vibrationEnabled;
-  final int thresholdSeconds;
-  final TimeOfDay dndStart;
-  final TimeOfDay dndEnd;
-  final ValueChanged<bool> onVibrationChanged;
-  final ValueChanged<double> onThresholdChanged;
-  final ValueChanged<TimeOfDay> onDndStartChanged;
-  final ValueChanged<TimeOfDay> onDndEndChanged;
-
-  String _formatTime(TimeOfDay time) {
-    final hour = time.hour.toString().padLeft(2, '0');
-    final minute = time.minute.toString().padLeft(2, '0');
-    return '$hour:$minute';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF1B1B1E), Color(0xFF121218)],
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-        ),
-      ),
-      child: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 8),
-              Text(
-                '设置',
-                style: theme.textTheme.titleLarge?.copyWith(
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                '根据你的习惯，调节提醒的方式',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: Colors.white70,
-                ),
-              ),
-              const SizedBox(height: 24),
-
-              _GlassCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              '震动提醒',
-                              style: theme.textTheme.titleMedium?.copyWith(
-                                color: Colors.white,
-                              ),
-                            ),
-                            const SizedBox(height: 4),
-                            Text(
-                              '轻柔震动，像朋友轻拍你的肩膀',
-                              style: theme.textTheme.bodySmall?.copyWith(
-                                color: Colors.white70,
-                              ),
-                            ),
-                          ],
-                        ),
-                        Switch(
-                          value: vibrationEnabled,
-                          onChanged: onVibrationChanged,
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              _GlassCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '侧躺持续时间阈值',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '仅当侧躺持续达到该时长才提醒，避免误判',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white70,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Text(
-                          '${thresholdSeconds.toString()} 秒',
-                          style: theme.textTheme.titleLarge?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        Text(
-                          '5 - 120 秒',
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: Colors.white54,
-                          ),
-                        ),
-                      ],
-                    ),
-                    Slider(
-                      min: 5,
-                      max: 120,
-                      divisions: 23,
-                      value: thresholdSeconds.toDouble().clamp(5, 120),
-                      onChanged: onThresholdChanged,
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              _GlassCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '免打扰时段',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '在该时间段内，不会弹出提醒或震动',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white70,
-                      ),
-                    ),
-                    const SizedBox(height: 12),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _DndTimeChip(
-                          label: '开始',
-                          timeText: _formatTime(dndStart),
-                          onTap: () async {
-                            final picked = await showTimePicker(
-                              context: context,
-                              initialTime: dndStart,
-                            );
-                            if (picked != null) {
-                              onDndStartChanged(picked);
-                            }
-                          },
-                        ),
-                        const SizedBox(width: 12),
-                        _DndTimeChip(
-                          label: '结束',
-                          timeText: _formatTime(dndEnd),
-                          onTap: () async {
-                            final picked = await showTimePicker(
-                              context: context,
-                              initialTime: dndEnd,
-                            );
-                            if (picked != null) {
-                              onDndEndChanged(picked);
-                            }
-                          },
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 16),
-
-              _GlassCard(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '隐私与数据说明',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 8),
-                    Text(
-                      '本 App 仅使用设备传感器判断姿态，不采集、不上传任何个人隐私数据。'
-                      '所有设置与统计仅保存在本机，可随时卸载清除。',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white70,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              const SizedBox(height: 24),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// 中央呼吸按钮，带轻微缩放与光晕效果
-class _BreathingButton extends StatefulWidget {
-  const _BreathingButton({
-    required this.active,
-    required this.onTap,
-    required this.primary,
-    required this.haloColor,
-  });
-
-  final bool active;
-  final VoidCallback onTap;
-  final Color primary;
-  final Color haloColor;
-
-  @override
-  State<_BreathingButton> createState() => _BreathingButtonState();
-}
-
-class _BreathingButtonState extends State<_BreathingButton>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = AnimationController(
-      vsync: this,
-      duration: const Duration(seconds: 3),
-      lowerBound: 0.95,
-      upperBound: 1.05,
-    )..repeat(reverse: true);
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final isActive = widget.active;
-
-    return AnimatedBuilder(
-      animation: _controller,
-      builder: (context, child) {
-        final scale = isActive ? _controller.value : 1.0;
-        return GestureDetector(
-          onTap: widget.onTap,
-          child: Transform.scale(
-            scale: scale,
-            child: Container(
-              width: 220,
-              height: 220,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: RadialGradient(
-                  colors: isActive
-                      ? [widget.haloColor.withOpacity(0.35), Colors.transparent]
-                      : [Colors.transparent, Colors.transparent],
-                  radius: 0.9,
-                ),
-              ),
-              child: Center(
-                child: AnimatedContainer(
-                  duration: const Duration(milliseconds: 300),
-                  curve: Curves.easeOutCubic,
-                  width: 180,
-                  height: 180,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    gradient: LinearGradient(
-                      colors: isActive
-                          ? [widget.haloColor, widget.haloColor.withOpacity(0.9)]
-                          : [Colors.white.withOpacity(0.12), Colors.white10],
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                    ),
-                    boxShadow: [
-                      if (isActive)
-                        BoxShadow(
-                          color: widget.haloColor.withOpacity(0.55),
-                          blurRadius: 35,
-                          spreadRadius: 6,
-                        ),
-                      BoxShadow(
-                        color: Colors.black.withOpacity(0.7),
-                        blurRadius: 24,
-                        offset: const Offset(0, 18),
-                      ),
-                    ],
-                    border: Border.all(
-                      color: Colors.white.withOpacity(0.22),
-                      width: 1.5,
-                    ),
-                  ),
-        child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-                      Icon(
-                        isActive ? Icons.pause_rounded : Icons.play_arrow_rounded,
-                        size: 46,
-                        color: Colors.white,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        isActive ? '监测中' : '开始监测',
-                        style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                              color: Colors.white,
-                              fontWeight: FontWeight.w600,
-                            ),
-                      ),
-                      const SizedBox(height: 4),
-            Text(
-                        isActive ? '保持舒服的坐姿就好' : '轻点一下，守护你的眼睛',
-                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              color: Colors.white70,
-                            ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        );
-      },
-    );
-  }
-}
-
-/// 玻璃拟态卡片组件
-class _GlassCard extends StatelessWidget {
-  const _GlassCard({required this.child});
-
-  final Widget child;
-
-  @override
-  Widget build(BuildContext context) {
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(20),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-        child: Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 16),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                Colors.white.withOpacity(0.08),
-                Colors.white.withOpacity(0.02),
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            border: Border.all(
-              color: Colors.white.withOpacity(0.16),
-              width: 1,
-            ),
-          ),
-          child: child,
-        ),
-      ),
-    );
-  }
-}
-
 /// 底部导航栏，带轻微放大与上浮效果
 class _FrostedBottomNavBar extends StatelessWidget {
   const _FrostedBottomNavBar({
@@ -1370,9 +624,9 @@ class _FrostedBottomNavBar extends StatelessWidget {
           child: Container(
             height: 64,
             decoration: BoxDecoration(
-              color: Colors.black.withOpacity(0.45),
+            color: Colors.black.withValues(alpha: 0.45),
               border: Border.all(
-                color: Colors.white.withOpacity(0.14),
+              color: Colors.white.withValues(alpha: 0.14),
               ),
             ),
             child: Row(
@@ -1399,7 +653,7 @@ class _FrostedBottomNavBar extends StatelessWidget {
                             size: selected ? 26 : 22,
                             color: selected
                                 ? Colors.white
-                                : Colors.white.withOpacity(0.6),
+                                : Colors.white.withValues(alpha: 0.6),
                           ),
                           const SizedBox(height: 4),
                           AnimatedDefaultTextStyle(
@@ -1410,7 +664,7 @@ class _FrostedBottomNavBar extends StatelessWidget {
                                   selected ? FontWeight.w600 : FontWeight.w400,
                               color: selected
                                   ? Colors.white
-                                  : Colors.white.withOpacity(0.6),
+                                  : Colors.white.withValues(alpha: 0.6),
                             ),
                             child: Text(item.label),
                           ),
@@ -1435,153 +689,7 @@ class _NavItem {
 }
 
 /// 免打扰时间选择器小卡片
-class _DndTimeChip extends StatelessWidget {
-  const _DndTimeChip({
-    required this.label,
-    required this.timeText,
-    required this.onTap,
-  });
-
-  final String label;
-  final String timeText;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Expanded(
-      child: GestureDetector(
-        onTap: onTap,
-        child: Container(
-          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(14),
-            color: Colors.white.withOpacity(0.06),
-            border: Border.all(
-              color: Colors.white.withOpacity(0.18),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.white70,
-                    ),
-              ),
-              const SizedBox(height: 4),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    timeText,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: Colors.white,
-                          fontWeight: FontWeight.w600,
-                        ),
-                  ),
-                  const Icon(
-                    Icons.keyboard_arrow_down_rounded,
-                    size: 18,
-                    color: Colors.white70,
-                  ),
-                ],
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 /// 提醒弹窗内容卡片
-class _ReminderCard extends StatelessWidget {
-  const _ReminderCard({required this.onClose});
-
-  final VoidCallback onClose;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-
-    return ClipRRect(
-      borderRadius: BorderRadius.circular(24),
-      child: BackdropFilter(
-        filter: ImageFilter.blur(sigmaX: 14, sigmaY: 14),
-        child: Container(
-          width: MediaQuery.of(context).size.width * 0.78,
-          padding: const EdgeInsets.fromLTRB(22, 20, 22, 18),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                Colors.white.withOpacity(0.9),
-                Colors.white.withOpacity(0.85),
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: const BoxDecoration(
-                  color: Color(0xFFFF8A80), // 暖珊瑚色近似
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.hotel_rounded,
-                  color: Colors.white,
-                  size: 24,
-                ),
-              ),
-              const SizedBox(height: 14),
-              Text(
-                '姿势不对哦～',
-                style: theme.textTheme.titleLarge?.copyWith(
-                  color: Color(0xFF333333),
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '你可能正侧躺玩手机，试着稍微调整一下姿势，给颈椎一点温柔。',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: Color(0xFF555555),
-                ),
-              ),
-              const SizedBox(height: 12),
-              Text(
-                '可在设置中调整提醒时间和免打扰时段。',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: Color(0xFF888888),
-                ),
-              ),
-              const SizedBox(height: 16),
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: onClose,
-                  child: const Text(
-                    '知道了',
-                    style: TextStyle(
-                      color: Color(0xFF4361EE),
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 // 注意：旧的Flutter Overlay悬浮窗组件已移除，现在使用原生Android悬浮窗
 // 原生悬浮窗可以在其他应用上显示，提供更好的后台监测体验
 

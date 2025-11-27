@@ -8,23 +8,59 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutter_application_1/main.dart';
+import 'package:flutter_application_1/pages/home_page.dart';
+import 'package:flutter_application_1/pages/settings_page.dart';
 
 void main() {
-  testWidgets('Counter increments smoke test', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
-    await tester.pumpWidget(const MyApp());
+  testWidgets('HomePage displays monitoring state and counts', (tester) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: HomePage(
+          monitoring: true,
+          isSideLying: true,
+          remindCount: 3,
+          thresholdSeconds: 15,
+          onToggleMonitoring: () {},
+        ),
+      ),
+    );
 
-    // Verify that our counter starts at 0.
-    expect(find.text('0'), findsOneWidget);
-    expect(find.text('1'), findsNothing);
+    expect(find.text('枕边哨'), findsOneWidget);
+    expect(find.text('今日提醒次数'), findsOneWidget);
+    expect(find.text('3 次'), findsOneWidget);
+    expect(find.text('监测中'), findsWidgets);
+    expect(find.text('≥ 15 秒'), findsOneWidget);
+  });
 
-    // Tap the '+' icon and trigger a frame.
-    await tester.tap(find.byIcon(Icons.add));
+  testWidgets('SettingsPage updates slider label when dragged', (tester) async {
+    double threshold = 30;
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (context, setState) {
+              return SettingsPage(
+                vibrationEnabled: true,
+                thresholdSeconds: threshold.round(),
+                dndStart: const TimeOfDay(hour: 23, minute: 0),
+                dndEnd: const TimeOfDay(hour: 7, minute: 0),
+                onVibrationChanged: (_) {},
+                onThresholdChanged: (value) => setState(() => threshold = value),
+                onDndStartChanged: (_) {},
+                onDndEndChanged: (_) {},
+              );
+            },
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('30 秒'), findsOneWidget);
+    await tester.drag(find.byType(Slider), const Offset(100, 0));
     await tester.pump();
-
-    // Verify that our counter has incremented.
-    expect(find.text('0'), findsNothing);
-    expect(find.text('1'), findsOneWidget);
+    expect(threshold, greaterThan(30));
+    expect(find.text('${threshold.round()} 秒'), findsOneWidget);
   });
 }
