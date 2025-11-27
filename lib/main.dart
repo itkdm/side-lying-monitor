@@ -3,13 +3,302 @@ import 'dart:math';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_background_service/flutter_background_service.dart';
+import 'package:flutter_background_service_android/flutter_background_service_android.dart';
+import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:vibration/vibration.dart';
 
+/// 原生悬浮窗管理类
+class FloatingWindowManager {
+  static const MethodChannel _channel = MethodChannel('com.example.flutter_application_1/floating_window');
+
+  /// 检查悬浮窗权限
+  static Future<bool> checkOverlayPermission() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('checkOverlayPermission');
+      return result ?? false;
+    } catch (e) {
+      print('检查悬浮窗权限失败: $e');
+      return false;
+    }
+  }
+
+  /// 请求悬浮窗权限
+  static Future<void> requestOverlayPermission() async {
+    try {
+      await _channel.invokeMethod('requestOverlayPermission');
+    } catch (e) {
+      print('请求悬浮窗权限失败: $e');
+    }
+  }
+
+  /// 显示悬浮窗
+  static Future<bool> showFloatingWindow() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('showFloatingWindow');
+      return result ?? false;
+    } catch (e) {
+      print('显示悬浮窗失败: $e');
+      return false;
+    }
+  }
+
+  /// 隐藏悬浮窗
+  static Future<bool> hideFloatingWindow() async {
+    try {
+      final result = await _channel.invokeMethod<bool>('hideFloatingWindow');
+      return result ?? false;
+    } catch (e) {
+      print('隐藏悬浮窗失败: $e');
+      return false;
+    }
+  }
+
+  /// 更新悬浮窗状态
+  static Future<bool> updateFloatingWindowState(bool isSideLying) async {
+    try {
+      final result = await _channel.invokeMethod<bool>(
+        'updateFloatingWindowState',
+        {'isSideLying': isSideLying},
+      );
+      return result ?? false;
+    } catch (e) {
+      print('更新悬浮窗状态失败: $e');
+      return false;
+    }
+  }
+}
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  _initializeBackgroundService();
   runApp(const PostureGuardianApp());
+}
+
+/// 初始化后台服务
+Future<void> _initializeBackgroundService() async {
+  final service = FlutterBackgroundService();
+  await service.configure(
+    androidConfiguration: AndroidConfiguration(
+      onStart: onStart,
+      autoStart: false,
+      isForegroundMode: true,
+      notificationChannelId: 'posture_guardian_service',
+      initialNotificationTitle: '枕边哨',
+      initialNotificationContent: '正在后台监测你的姿势',
+      foregroundServiceNotificationId: 888,
+    ),
+    iosConfiguration: IosConfiguration(
+      autoStart: false,
+      onForeground: onStart,
+      onBackground: onIosBackground,
+    ),
+  );
+}
+
+/// iOS 后台回调
+@pragma('vm:entry-point')
+Future<bool> onIosBackground(ServiceInstance service) async {
+  WidgetsFlutterBinding.ensureInitialized();
+  return true;
+}
+
+/// 后台服务启动回调
+@pragma('vm:entry-point')
+void onStart(ServiceInstance service) async {
+  // 如果是 Android，设置为前台服务
+  if (service is AndroidServiceInstance) {
+    service.setAsForegroundService();
+  }
+
+  // 初始化通知插件（在后台服务中）
+  final FlutterLocalNotificationsPlugin notifications = FlutterLocalNotificationsPlugin();
+  const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+  const iosSettings = DarwinInitializationSettings();
+  const initSettings = InitializationSettings(
+    android: androidSettings,
+    iOS: iosSettings,
+  );
+  await notifications.initialize(initSettings);
+
+  // 在后台服务中保持传感器监听
+  StreamSubscription<AccelerometerEvent>? accelSub;
+  Timer? checkTimer;
+  
+  // 从 SharedPreferences 读取设置
+  final prefs = await SharedPreferences.getInstance();
+  bool vibrationEnabled = prefs.getBool('vibration_enabled') ?? true;
+  int thresholdSeconds = prefs.getInt('threshold_seconds') ?? 5;
+  
+  // 侧躺检测状态
+  bool isSideLying = false;
+  DateTime? sideLyingSince;
+  DateTime? sideCandidateSince;
+  double? lastG;
+  double avgNx = 0;
+  double avgNy = 0;
+  double avgNz = 1;
+  double avgG = 9.8;
+
+  // 开始传感器监听
+  accelSub = accelerometerEvents.listen((event) {
+    try {
+      final ax = event.x;
+      final ay = event.y;
+      final az = event.z;
+      final g = sqrt(ax * ax + ay * ay + az * az);
+
+      if (g < 1e-3) return;
+
+      final nx = ax / g;
+      final ny = ay / g;
+      final nz = az / g;
+
+      const alpha = 0.15;
+      avgNx = alpha * nx + (1 - alpha) * avgNx;
+      avgNy = alpha * ny + (1 - alpha) * avgNy;
+      avgNz = alpha * nz + (1 - alpha) * avgNz;
+      avgG = alpha * g + (1 - alpha) * avgG;
+
+      double deltaG = 0;
+      if (lastG != null) {
+        deltaG = (g - lastG!).abs();
+      }
+      lastG = g;
+
+      if (deltaG > 0.8) {
+        sideCandidateSince = null;
+        if (isSideLying) {
+          isSideLying = false;
+          sideLyingSince = null;
+        }
+      }
+
+      final bool isScreenRoughlyVertical = avgNz.abs() < 0.8;
+      final bool isGravityMostlySide = avgNx.abs() > 0.4 || avgNy.abs() > 0.4;
+      final bool isSideByDirection = isScreenRoughlyVertical && isGravityMostlySide;
+      final bool isSideByRaw = ax.abs() > 6.5 && az.abs() < 5.0;
+      final isSide = isSideByDirection || isSideByRaw;
+
+      final now = DateTime.now();
+
+      if (isSide) {
+        sideCandidateSince ??= now;
+        final stableDuration = now.difference(sideCandidateSince!).inSeconds;
+        const stableThresholdSeconds = 2;
+        if (!isSideLying && stableDuration >= stableThresholdSeconds) {
+          isSideLying = true;
+          sideLyingSince = now;
+        }
+      } else {
+        sideCandidateSince = null;
+        isSideLying = false;
+        sideLyingSince = null;
+      }
+    } catch (e) {
+      // 捕获传感器错误，防止服务崩溃
+      print('Sensor error in background service: $e');
+    }
+  });
+
+  // 检查是否在免打扰时段
+  bool isInDnd(DateTime now, int dndStartMinutes, int dndEndMinutes) {
+    final currentMinutes = now.hour * 60 + now.minute;
+    if (dndStartMinutes <= dndEndMinutes) {
+      return currentMinutes >= dndStartMinutes && currentMinutes < dndEndMinutes;
+    } else {
+      // 穿越午夜，例如 23:00–07:00
+      return currentMinutes >= dndStartMinutes || currentMinutes < dndEndMinutes;
+    }
+  }
+
+  // 定时检查提醒
+  checkTimer = Timer.periodic(const Duration(seconds: 1), (timer) async {
+    try {
+      // 检查监测状态是否仍然开启
+      final currentPrefs = await SharedPreferences.getInstance();
+      final isMonitoring = currentPrefs.getBool('monitoring') ?? false;
+      if (!isMonitoring) {
+        // 监测已关闭，停止服务
+        accelSub?.cancel();
+        checkTimer?.cancel();
+        service.stopSelf();
+        return;
+      }
+      
+      if (!isSideLying || sideLyingSince == null) return;
+
+      final now = DateTime.now();
+      
+      // 重新读取设置（可能用户修改了）
+      final currentVibrationEnabled = currentPrefs.getBool('vibration_enabled') ?? true;
+      final currentThresholdSeconds = currentPrefs.getInt('threshold_seconds') ?? 5;
+      final dndStartMinutes = currentPrefs.getInt('dnd_start_minutes') ?? 23 * 60;
+      final dndEndMinutes = currentPrefs.getInt('dnd_end_minutes') ?? 7 * 60;
+      
+      // 更新本地变量
+      vibrationEnabled = currentVibrationEnabled;
+      thresholdSeconds = currentThresholdSeconds;
+      
+      // 检查免打扰时段
+      if (isInDnd(now, dndStartMinutes, dndEndMinutes)) return;
+
+      final elapsed = now.difference(sideLyingSince!).inSeconds;
+      if (elapsed < thresholdSeconds) return;
+
+      // 重置计时起点
+      sideLyingSince = now;
+
+      // 震动提醒
+      if (vibrationEnabled) {
+        try {
+          if ((await Vibration.hasVibrator()) ?? false) {
+            Vibration.vibrate(pattern: [0, 120, 60, 120]);
+          }
+        } catch (e) {
+          // 忽略震动错误
+        }
+      }
+
+      // 发送通知
+      const androidDetails = AndroidNotificationDetails(
+        'posture_guardian_channel',
+        '侧躺监测提醒',
+        channelDescription: '当你侧躺玩手机时，会收到健康提醒',
+        importance: Importance.high,
+        priority: Priority.high,
+        showWhen: true,
+      );
+      const iosDetails = DarwinNotificationDetails(
+        presentAlert: true,
+        presentBadge: true,
+        presentSound: true,
+      );
+      const notificationDetails = NotificationDetails(
+        android: androidDetails,
+        iOS: iosDetails,
+      );
+      await notifications.show(
+        1,
+        '姿势不对哦～',
+        '你可能正在侧躺玩手机，注意颈椎健康哦～',
+        notificationDetails,
+      );
+    } catch (e) {
+      // 捕获所有错误，防止服务崩溃
+      print('Background service error: $e');
+    }
+  });
+
+  // 监听服务停止
+  service.on('stopService').listen((event) {
+    accelSub?.cancel();
+    checkTimer?.cancel();
+    service.stopSelf();
+  });
 }
 
 /// 应用主入口，配置全局暗色玻璃拟态风格
@@ -30,7 +319,7 @@ class PostureGuardianApp extends StatelessWidget {
     );
 
     return MaterialApp(
-      title: '侧躺玩手机提醒',
+      title: '枕边哨',
       debugShowCheckedModeBanner: false,
       themeMode: ThemeMode.dark,
       theme: ThemeData(
@@ -39,6 +328,23 @@ class PostureGuardianApp extends StatelessWidget {
         scaffoldBackgroundColor: background,
         fontFamily: 'Roboto',
       ),
+      builder: (context, child) {
+        // 配置状态栏样式，使其与首页背景一致
+        // 同时确保背景色立即显示，避免空白页面
+        return Container(
+          color: background, // 立即显示背景色
+          child: AnnotatedRegion<SystemUiOverlayStyle>(
+            value: const SystemUiOverlayStyle(
+              statusBarColor: Colors.transparent, // 透明状态栏
+              statusBarIconBrightness: Brightness.light, // 浅色图标（白色）
+              statusBarBrightness: Brightness.dark, // iOS 状态栏样式
+              systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜色
+              systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜色
+            ),
+            child: child!,
+          ),
+        );
+      },
       home: const RootShell(),
     );
   }
@@ -52,7 +358,7 @@ class RootShell extends StatefulWidget {
   State<RootShell> createState() => _RootShellState();
 }
 
-class _RootShellState extends State<RootShell> {
+class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   // UI & 导航
   int _currentIndex = 0;
 
@@ -85,22 +391,223 @@ class _RootShellState extends State<RootShell> {
   double _avgG = 9.8;
   Timer? _checkTimer;
 
+  // 通知服务
+  final FlutterLocalNotificationsPlugin _notifications =
+      FlutterLocalNotificationsPlugin();
+  bool _isInBackground = false;
+  // 提醒弹窗状态：是否正在显示
+  bool _isReminderDialogShowing = false;
+  
+  // 悬浮窗相关（使用原生悬浮窗）
+  bool _isFloatingWindowVisible = false;
+  bool _hasOverlayPermission = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _initializeNotifications();
+    _checkOverlayPermission();
     _loadPersistedState();
+  }
+  
+  /// 检查悬浮窗权限
+  Future<void> _checkOverlayPermission() async {
+    final hasPermission = await FloatingWindowManager.checkOverlayPermission();
+    setState(() {
+      _hasOverlayPermission = hasPermission;
+    });
+  }
+
+  Future<void> _initializeNotifications() async {
+    const androidSettings = AndroidInitializationSettings('@mipmap/ic_launcher');
+    const iosSettings = DarwinInitializationSettings();
+    const initSettings = InitializationSettings(
+      android: androidSettings,
+      iOS: iosSettings,
+    );
+
+    await _notifications.initialize(
+      initSettings,
+      onDidReceiveNotificationResponse: (details) {
+        // 用户点击通知时的处理（可以打开 App）
+      },
+    );
+
+    // 请求通知权限（Android 13+）
+    if (await _notifications
+            .resolvePlatformSpecificImplementation<
+                AndroidFlutterLocalNotificationsPlugin>()
+            ?.requestNotificationsPermission() ??
+        false) {
+      // 权限已授予
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _accelSub?.cancel();
     _checkTimer?.cancel();
     _lastG = null;
+    // 清理悬浮窗
+    if (_isFloatingWindowVisible) {
+      FloatingWindowManager.hideFloatingWindow();
+    }
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    // 使用悬浮窗方案：当应用进入后台时，显示悬浮窗保持应用运行
+    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
+      // 进入后台：如果监测开启，显示悬浮窗并启动原生服务监测
+      _isInBackground = true;
+      if (_monitoring) {
+        // 停止Flutter层的传感器监听（避免重复）
+        _stopSensorListening();
+        // 显示悬浮窗（原生服务会启动传感器监听）
+        if (!_isFloatingWindowVisible) {
+          _showFloatingWindow();
+        }
+      }
+    } else if (state == AppLifecycleState.resumed) {
+      // 回到前台：停止原生服务监测，使用Flutter层监测
+      _isInBackground = false;
+      // 强制隐藏悬浮窗
+      if (_isFloatingWindowVisible) {
+        _hideFloatingWindow();
+      }
+      // 确保传感器监听正在运行（Flutter层）
+      if (_monitoring && _accelSub == null) {
+        _startSensorListening();
+      }
+      // 重新加载统计数据（可能原生服务更新了）
+      _loadPersistedState();
+    }
+  }
+  
+  /// 检查并恢复监测状态
+  Future<void> _checkAndRestoreMonitoringState() async {
+    final prefs = await SharedPreferences.getInstance();
+    final isMonitoring = prefs.getBool('monitoring') ?? false;
+    
+    if (isMonitoring && _monitoring) {
+      // 监测状态仍然开启，启动前台监测
+      _startSensorListening();
+    } else if (!isMonitoring && _monitoring) {
+      // 监测状态已被关闭，同步状态
+      setState(() {
+        _monitoring = false;
+      });
+      _stopSensorListening();
+      // 隐藏悬浮窗
+      if (_isFloatingWindowVisible) {
+        _hideFloatingWindow();
+      }
+    } else if (isMonitoring && !_monitoring) {
+      // 监测状态被开启（可能在其他地方），同步状态
+      setState(() {
+        _monitoring = true;
+      });
+      _startSensorListening();
+    }
+  }
+
+  /// 显示悬浮窗（使用原生悬浮窗）
+  Future<void> _showFloatingWindow() async {
+    if (_isFloatingWindowVisible || !_monitoring) return;
+    
+    // 检查权限
+    if (!_hasOverlayPermission) {
+      // 请求权限
+      await FloatingWindowManager.requestOverlayPermission();
+      // 重新检查权限
+      await _checkOverlayPermission();
+      if (!_hasOverlayPermission) {
+        // 权限未授予，显示提示
+        if (mounted) {
+          _showPermissionDialog();
+        }
+        return;
+      }
+    }
+    
+    // 显示原生悬浮窗
+    final success = await FloatingWindowManager.showFloatingWindow();
+    if (success && mounted) {
+      setState(() {
+        _isFloatingWindowVisible = true;
+      });
+      // 更新初始状态
+      FloatingWindowManager.updateFloatingWindowState(_isSideLying);
+    }
+  }
+
+  /// 隐藏悬浮窗
+  Future<void> _hideFloatingWindow() async {
+    if (!_isFloatingWindowVisible) return;
+    await FloatingWindowManager.hideFloatingWindow();
+    if (mounted) {
+      setState(() {
+        _isFloatingWindowVisible = false;
+      });
+    }
+  }
+  
+  /// 更新悬浮窗状态（当侧躺状态改变时调用）
+  void _updateFloatingWindowState() {
+    if (_isFloatingWindowVisible) {
+      FloatingWindowManager.updateFloatingWindowState(_isSideLying);
+    }
+  }
+  
+  /// 显示权限请求对话框
+  void _showPermissionDialog() {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF22232A),
+        title: const Text(
+          '需要悬浮窗权限',
+          style: TextStyle(color: Colors.white),
+        ),
+        content: const Text(
+          '为了在后台持续监测，需要授予悬浮窗权限。请在设置中允许"在其他应用上层显示"。',
+          style: TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () async {
+              Navigator.of(context).pop();
+              await FloatingWindowManager.requestOverlayPermission();
+              await _checkOverlayPermission();
+            },
+            child: const Text(
+              '去设置',
+              style: TextStyle(color: Color(0xFF4361EE)),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _loadPersistedState() async {
     final prefs = await SharedPreferences.getInstance();
+
+    // 为了拿到原生服务写入的最新统计，尽可能从磁盘刷新一次
+    try {
+      // ignore: deprecated_member_use, invalid_use_of_visible_for_testing_member
+      await prefs.reload();
+    } catch (_) {
+      // 低版本 shared_preferences 可能不支持 reload，忽略即可
+    }
 
     final now = DateTime.now();
     final todayKey = '${now.year}-${now.month}-${now.day}';
@@ -108,7 +615,18 @@ class _RootShellState extends State<RootShell> {
     final storedCount =
         storedDate == todayKey ? prefs.getInt('today_remind_count') ?? 0 : 0;
 
+    // 调试日志：观察 Dart 端实际从 SharedPreferences 读到的值
+    // 请在调试时关注 tag 为 "PostureGuardian" 的日志
+    // ignore: avoid_print
+    print(
+        '[PostureGuardian] _loadPersistedState -> todayKey=$todayKey, storedDate=$storedDate, storedCount=$storedCount');
+
+    if (!mounted) return;
+
     setState(() {
+      // 恢复监测状态
+      _monitoring = prefs.getBool('monitoring') ?? false;
+      
       _vibrationEnabled = prefs.getBool('vibration_enabled') ?? true;
       _thresholdSeconds = prefs.getInt('threshold_seconds') ?? 5;
 
@@ -120,6 +638,12 @@ class _RootShellState extends State<RootShell> {
       _today = now;
       _todayRemindCount = storedCount;
     });
+    
+      // 如果之前是监测状态，恢复监测
+    if (_monitoring) {
+      _isInBackground = false;
+      _startSensorListening();
+    }
   }
 
   Future<void> _persistSettings() async {
@@ -151,14 +675,31 @@ class _RootShellState extends State<RootShell> {
     setState(() {
       _monitoring = !_monitoring;
     });
+    
+    // 持久化监测状态
+    _persistMonitoringState();
 
     if (_monitoring) {
       // 开始监测时给一个轻微提示震动
       _vibrateOnce(durationMs: 60);
       _startSensorListening();
+      // 如果应用在后台，显示悬浮窗
+      if (_isInBackground && !_isFloatingWindowVisible) {
+        _showFloatingWindow();
+      }
     } else {
       _stopSensorListening();
+      // 隐藏悬浮窗
+      if (_isFloatingWindowVisible) {
+        _hideFloatingWindow();
+      }
     }
+  }
+  
+  /// 持久化监测状态
+  Future<void> _persistMonitoringState() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('monitoring', _monitoring);
   }
 
   void _startSensorListening() {
@@ -202,8 +743,11 @@ class _RootShellState extends State<RootShell> {
       if (deltaG > 0.8) {
         _sideCandidateSince = null;
         if (_isSideLying) {
-          _isSideLying = false;
-          _sideLyingSince = null;
+          setState(() {
+            _isSideLying = false;
+            _sideLyingSince = null;
+          });
+          _updateFloatingWindowState();
         }
       }
 
@@ -230,21 +774,32 @@ class _RootShellState extends State<RootShell> {
         final stableDuration =
             now.difference(_sideCandidateSince!).inSeconds;
 
-        // 需要先经过一个“稳定期”（例如 2 秒），再真正确认进入侧躺
+        // 需要先经过一个"稳定期"（例如 2 秒），再真正确认进入侧躺
         const stableThresholdSeconds = 2;
         if (!_isSideLying && stableDuration >= stableThresholdSeconds) {
-          _isSideLying = true;
-          // 确认进入侧躺的时间点，用于后续健康提醒计时（再叠加 _thresholdSeconds）
-          _sideLyingSince = now;
-          // 第一次进入“稳定的侧躺状态”时，给一次轻微震动反馈
+          setState(() {
+            _isSideLying = true;
+            // 确认进入侧躺的时间点，用于后续健康提醒计时（再叠加 _thresholdSeconds）
+            _sideLyingSince = now;
+          });
+          // 第一次进入"稳定的侧躺状态"时，给一次轻微震动反馈
           _vibrateOnce(durationMs: 50);
-          _showSideStartDialog();
+          // 更新悬浮窗状态
+          _updateFloatingWindowState();
         }
       } else {
         // 退出候选与确认状态
-        _sideCandidateSince = null;
-        _isSideLying = false;
-        _sideLyingSince = null;
+        if (_isSideLying) {
+          setState(() {
+            _sideCandidateSince = null;
+            _isSideLying = false;
+            _sideLyingSince = null;
+          });
+          // 更新悬浮窗状态
+          _updateFloatingWindowState();
+        } else {
+          _sideCandidateSince = null;
+        }
       }
     });
 
@@ -258,6 +813,7 @@ class _RootShellState extends State<RootShell> {
     _checkTimer?.cancel();
     _isSideLying = false;
     _sideLyingSince = null;
+    _isReminderDialogShowing = false;
   }
 
   bool _isInDnd(DateTime now) {
@@ -294,6 +850,24 @@ class _RootShellState extends State<RootShell> {
     final elapsed = now.difference(_sideLyingSince!).inSeconds;
     if (elapsed < _thresholdSeconds) return;
 
+    // 如果弹窗已经显示，不再重复弹出，但继续累加提醒次数和震动
+    if (_isReminderDialogShowing) {
+      // 继续累加提醒次数（但不在UI上显示，因为弹窗已存在）
+      setState(() {
+        _todayRemindCount += 1;
+      });
+      await _persistTodayStats();
+      
+      // 继续震动提醒（如果可用且开启）
+      if (_vibrationEnabled &&
+          ((await Vibration.hasVibrator()) ?? false)) {
+        Vibration.vibrate(pattern: [0, 120, 60, 120]);
+      }
+      // 重置计时起点，等待下次阈值周期
+      _sideLyingSince = now;
+      return;
+    }
+
     // 避免多次触发：重置起点，下一次需重新满足阈值
     _sideLyingSince = now;
 
@@ -310,10 +884,54 @@ class _RootShellState extends State<RootShell> {
       Vibration.vibrate(pattern: [0, 120, 60, 120]);
     }
 
-    _showReminderDialog();
+    // 根据 App 是否在后台，选择不同的提醒方式
+    if (_isInBackground || !mounted) {
+      // 后台：使用通知提醒
+      await _showBackgroundNotification();
+    } else {
+      // 前台：使用弹窗提醒
+      _showReminderDialog();
+    }
+  }
+
+  /// 后台时显示通知提醒
+  Future<void> _showBackgroundNotification() async {
+    const androidDetails = AndroidNotificationDetails(
+      'posture_guardian_channel',
+      '侧躺监测提醒',
+      channelDescription: '当你侧躺玩手机时，会收到健康提醒',
+      importance: Importance.high,
+      priority: Priority.high,
+      showWhen: true,
+    );
+
+    const iosDetails = DarwinNotificationDetails(
+      presentAlert: true,
+      presentBadge: true,
+      presentSound: true,
+    );
+
+    const notificationDetails = NotificationDetails(
+      android: androidDetails,
+      iOS: iosDetails,
+    );
+
+    await _notifications.show(
+      1,
+      '姿势不对哦～',
+      '你可能正在侧躺玩手机，注意颈椎健康哦～',
+      notificationDetails,
+    );
   }
 
   void _showReminderDialog() {
+    // 如果弹窗已经显示，不再重复弹出
+    if (_isReminderDialogShowing) return;
+    
+    setState(() {
+      _isReminderDialogShowing = true;
+    });
+    
     showGeneralDialog(
       context: context,
       barrierDismissible: true,
@@ -343,7 +961,15 @@ class _RootShellState extends State<RootShell> {
                 child: ScaleTransition(
                   scale: Tween<double>(begin: 0.9, end: 1.0).animate(curved),
                   child: _ReminderCard(
-                    onClose: () => Navigator.of(context).pop(),
+                    onClose: () {
+                      Navigator.of(context).pop();
+                      // 用户点击"知道了"后，重置状态，允许下次提醒
+                      setState(() {
+                        _isReminderDialogShowing = false;
+                        // 重置侧躺计时起点，这样用户如果继续保持侧躺，需要重新满足阈值才会再次提醒
+                        _sideLyingSince = DateTime.now();
+                      });
+                    },
                   ),
                 ),
               ),
@@ -351,88 +977,18 @@ class _RootShellState extends State<RootShell> {
           ],
         );
       },
-    );
-  }
-
-  /// 检测到“进入侧躺状态”时的轻量提示弹窗（短暂出现 1.5 秒）
-  void _showSideStartDialog() {
-    showGeneralDialog(
-      context: context,
-      barrierDismissible: true,
-      barrierLabel: '侧躺检测开始',
-      pageBuilder: (context, _, __) {
-        return const SizedBox.shrink();
-      },
-      transitionBuilder: (context, animation, secondary, child) {
-        final curved =
-            CurvedAnimation(parent: animation, curve: Curves.easeOutCubic);
-        return Stack(
-          children: [
-            Align(
-              alignment: Alignment.bottomCenter,
-              child: SafeArea(
-                child: FadeTransition(
-                  opacity: curved,
-                  child: ScaleTransition(
-                    scale:
-                        Tween<double>(begin: 0.96, end: 1.0).animate(curved),
-                    child: Padding(
-                      padding: const EdgeInsets.only(
-                        left: 24,
-                        right: 24,
-                        bottom: 24,
-                      ),
-                      child: _GlassCard(
-                        child: Row(
-                          children: [
-                            const Icon(
-                              Icons.bedtime_rounded,
-                              color: Color(0xFFB5179E),
-                            ),
-                            const SizedBox(width: 12),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                mainAxisSize: MainAxisSize.min,
-                                children: const [
-                                  Text(
-                                    '检测到你正在侧躺',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                                  ),
-                                  SizedBox(height: 2),
-                                  Text(
-                                    '已开始计时，超过设定时长会提醒你调整姿势。',
-                                    style: TextStyle(
-                                      color: Colors.white70,
-                                      fontSize: 12,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    );
-
-    // 1.5 秒后自动关闭这个轻提示
-    Future.delayed(const Duration(milliseconds: 1500), () {
-      if (Navigator.of(context, rootNavigator: true).canPop()) {
-        Navigator.of(context, rootNavigator: true).pop();
+    ).then((_) {
+      // 对话框关闭时的回调（无论是点击按钮还是点击外部关闭）
+      if (mounted) {
+        setState(() {
+          _isReminderDialogShowing = false;
+          // 重置侧躺计时起点
+          _sideLyingSince = DateTime.now();
+        });
       }
     });
   }
+
 
   // —— 设置项的更新回调 ——
 
@@ -523,36 +1079,39 @@ class HomePage extends StatelessWidget {
     const primary = Color(0xFF4361EE);
     const haloColor = Color(0xFF6BAA75); // 鼠尾草绿
 
-    return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF1B1B1E), Color(0xFF121218)],
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-        ),
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent, // 透明状态栏
+        statusBarIconBrightness: Brightness.light, // 浅色图标（白色）
+        statusBarBrightness: Brightness.dark, // iOS 状态栏样式
+        systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜色
+        systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜色
       ),
-      child: SafeArea(
+      child: Container(
+        decoration: const BoxDecoration(
+          gradient: LinearGradient(
+            colors: [Color(0xFF1B1B1E), Color(0xFF121218)],
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+          ),
+        ),
+        child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              const SizedBox(height: 8),
+              const SizedBox(height: 16),
+              // 顶部标题居中
               Text(
-                '侧躺监测',
+                '枕边哨',
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.w600,
                   color: Colors.white,
+                  fontSize: 24,
                 ),
+                textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 4),
-              Text(
-                monitoring ? 'App 正在默默守护你的颈椎' : '今天的你也坐姿端正吗？',
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: Colors.white70,
-                ),
-              ),
-              const SizedBox(height: 32),
+              const SizedBox(height: 40),
 
               // 中间大按钮区域
               Expanded(
@@ -568,82 +1127,148 @@ class HomePage extends StatelessWidget {
 
               const SizedBox(height: 24),
 
-              // 今日提醒次数卡片
+              // 今日提醒次数卡片 - 美化样式
               _GlassCard(
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
                       children: [
-                        Text(
-                          '今日提醒次数',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: Colors.white70,
-                          ),
+                        Row(
+                          children: [
+                            Container(
+                              padding: const EdgeInsets.all(8),
+                              decoration: BoxDecoration(
+                                color: primary.withOpacity(0.2),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Icon(
+                                Icons.notifications_active_rounded,
+                                color: primary,
+                                size: 20,
+                              ),
+                            ),
+                            const SizedBox(width: 12),
+                            Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(
+                                  '今日提醒次数',
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: Colors.white70,
+                                    fontSize: 12,
+                                  ),
+                                ),
+                                const SizedBox(height: 4),
+                                Text(
+                                  '$remindCount 次',
+                                  style: theme.textTheme.headlineMedium?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.bold,
+                                    fontSize: 28,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '$remindCount 次',
-                          style: theme.textTheme.headlineSmall?.copyWith(
-                            color: Colors.white,
-                            fontWeight: FontWeight.bold,
+                        Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.1),
+                            borderRadius: BorderRadius.circular(12),
+                            border: Border.all(
+                              color: Colors.white.withOpacity(0.2),
+                            ),
+                          ),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.end,
+                            children: [
+                              Text(
+                                '触发条件',
+                                style: theme.textTheme.bodySmall?.copyWith(
+                                  color: Colors.white70,
+                                  fontSize: 11,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                '≥ $thresholdSeconds 秒',
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: Colors.white,
+                                  fontWeight: FontWeight.w600,
+                                  fontSize: 14,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
                       ],
                     ),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.end,
-                      children: [
-                        Text(
-                          '触发条件',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: Colors.white70,
-                          ),
-                        ),
-                        const SizedBox(height: 6),
-                        Text(
-                          '侧躺 ≥ $thresholdSeconds 秒',
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    )
                   ],
                 ),
               ),
 
               const SizedBox(height: 12),
 
-              // 持续侧躺状态实时提示（只要保持侧躺就一直显示）
+              // 持续侧躺状态实时提示（只要保持侧躺就一直显示）- 美化样式
               if (monitoring && isSideLying)
                 _GlassCard(
                   child: Row(
                     crossAxisAlignment: CrossAxisAlignment.center,
                     children: [
-                      const Icon(
-                        Icons.bedtime_rounded,
-                        color: Color(0xFFB5179E),
+                      Container(
+                        padding: const EdgeInsets.all(10),
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            colors: [
+                              const Color(0xFFB5179E).withOpacity(0.3),
+                              const Color(0xFFB5179E).withOpacity(0.1),
+                            ],
+                          ),
+                          borderRadius: BorderRadius.circular(12),
+                        ),
+                        child: const Icon(
+                          Icons.bedtime_rounded,
+                          color: Color(0xFFB5179E),
+                          size: 24,
+                        ),
                       ),
-                      const SizedBox(width: 12),
+                      const SizedBox(width: 14),
                       Expanded(
                         child: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Text(
-                              '正在检测侧躺姿势',
-                              style: theme.textTheme.bodyMedium?.copyWith(
-                                color: Colors.white,
-                                fontWeight: FontWeight.w600,
-                              ),
+                            Row(
+                              children: [
+                                Text(
+                                  '正在检测侧躺姿势',
+                                  style: theme.textTheme.titleSmall?.copyWith(
+                                    color: Colors.white,
+                                    fontWeight: FontWeight.w700,
+                                    fontSize: 15,
+                                  ),
+                                ),
+                                const SizedBox(width: 6),
+                                Container(
+                                  width: 8,
+                                  height: 8,
+                                  decoration: BoxDecoration(
+                                    color: const Color(0xFFB5179E),
+                                    shape: BoxShape.circle,
+                                  ),
+                                ),
+                              ],
                             ),
-                            const SizedBox(height: 2),
+                            const SizedBox(height: 6),
                             Text(
                               '保持当前姿势时，此提示会一直显示，超过设定时长将弹出健康提醒。',
                               style: theme.textTheme.bodySmall?.copyWith(
                                 color: Colors.white70,
+                                fontSize: 12,
+                                height: 1.4,
                               ),
                             ),
                           ],
@@ -657,6 +1282,7 @@ class HomePage extends StatelessWidget {
             ],
           ),
         ),
+      ),
       ),
     );
   }
@@ -719,7 +1345,7 @@ class SettingsPage extends StatelessWidget {
               ),
               const SizedBox(height: 4),
               Text(
-                '根据你的习惯，调节提醒的方式与灵敏度',
+                '根据你的习惯，调节提醒的方式',
                 style: theme.textTheme.bodyMedium?.copyWith(
                   color: Colors.white70,
                 ),
@@ -1013,7 +1639,7 @@ class _BreathingButtonState extends State<_BreathingButton>
                       ),
                       const SizedBox(height: 4),
             Text(
-                        isActive ? '保持舒服的坐姿就好' : '轻点一下，守护你的颈椎',
+                        isActive ? '保持舒服的坐姿就好' : '轻点一下，守护你的眼睛',
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
                               color: Colors.white70,
                             ),
@@ -1277,7 +1903,7 @@ class _ReminderCard extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               Text(
-                '可在设置中调整提醒灵敏度和免打扰时段。',
+                '可在设置中调整提醒时间和免打扰时段。',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: Color(0xFF888888),
                 ),
@@ -1303,5 +1929,8 @@ class _ReminderCard extends StatelessWidget {
     );
   }
 }
+
+// 注意：旧的Flutter Overlay悬浮窗组件已移除，现在使用原生Android悬浮窗
+// 原生悬浮窗可以在其他应用上显示，提供更好的后台监测体验
 
 

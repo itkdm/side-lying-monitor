@@ -1,12 +1,16 @@
 <?xml version="1.0" encoding="utf-8"?>
-<!-- Modify this file to customize your launch splash screen -->
+<!-- 启动画面：匹配 Flutter 启动页面样式 -->
 <layer-list xmlns:android="http://schemas.android.com/apk/res/android">
-    <item android:drawable="?android:colorBackground" />
-
-    <!-- You can insert your own image assets here -->
-    <!-- <item>
+    <!-- 深色渐变背景（从 #1B1B1E 到 #121218） -->
+    <!-- 由于 XML 不支持渐变，使用主背景色 #1B1B1E -->
+    <item>
+        <color android:color="#1B1B1E" />
+    </item>
+    
+    <!-- 应用图标居中显示，模拟 Flutter 启动页面的图标 -->
+    <item>
         <bitmap
             android:gravity="center"
-            android:src="@mipmap/launch_image" />
-    </item> -->
+            android:src="@mipmap/ic_launcher" />
+    </item>
 </layer-list>
