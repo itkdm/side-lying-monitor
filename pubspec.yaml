@@ -44,10 +44,6 @@ dependencies:
   # Persist simple settings & statistics locally
   shared_preferences: ^2.2.2
 
-  # Background service for continuous monitoring
-  flutter_background_service: ^5.0.5
-  flutter_background_service_android: ^6.1.5
-
   # Local notifications for background reminders
   flutter_local_notifications: ^17.2.2
 
