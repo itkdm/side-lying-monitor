@@ -1,8 +1,5 @@
 package com.example.flutter_application_1
 
-import android.app.Activity
-import android.content.Context
-import android.content.SharedPreferences
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -42,6 +39,15 @@ class MainActivity : FlutterActivity() {
                 "updateFloatingWindowState" -> {
                     val isSideLying = call.argument<Boolean>("isSideLying") ?: false
                     updateFloatingWindowState(isSideLying)
+                    result.success(true)
+                }
+                "syncSettings" -> {
+                    syncSettingsToService(
+                        vibrationEnabled = call.argument<Boolean>("vibrationEnabled") ?: true,
+                        thresholdSeconds = call.argument<Int>("thresholdSeconds") ?: 5,
+                        dndStartMinutes = call.argument<Int>("dndStartMinutes") ?: (23 * 60),
+                        dndEndMinutes = call.argument<Int>("dndEndMinutes") ?: (7 * 60)
+                    )
                     result.success(true)
                 }
                 else -> {
@@ -107,5 +113,20 @@ class MainActivity : FlutterActivity() {
         if (requestCode == REQUEST_CODE_OVERLAY_PERMISSION) {
             // 权限请求结果，可以通过MethodChannel通知Flutter
         }
+    }
+
+    private fun syncSettingsToService(
+        vibrationEnabled: Boolean,
+        thresholdSeconds: Int,
+        dndStartMinutes: Int,
+        dndEndMinutes: Int
+    ) {
+        val intent = Intent(FloatingWindowService.ACTION_SETTINGS_UPDATED).apply {
+            putExtra(FloatingWindowService.EXTRA_VIBRATION_ENABLED, vibrationEnabled)
+            putExtra(FloatingWindowService.EXTRA_THRESHOLD_SECONDS, thresholdSeconds)
+            putExtra(FloatingWindowService.EXTRA_DND_START_MINUTES, dndStartMinutes)
+            putExtra(FloatingWindowService.EXTRA_DND_END_MINUTES, dndEndMinutes)
+        }
+        sendBroadcast(intent)
     }
 }

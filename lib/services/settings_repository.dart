@@ -1,10 +1,15 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 /// 统一管理 SharedPreferences，避免高频重复读取并提供内存缓存
 class SettingsRepository extends ChangeNotifier {
   SettingsRepository._internal();
   static final SettingsRepository instance = SettingsRepository._internal();
+  static const MethodChannel _channel =
+      MethodChannel('com.example.flutter_application_1/floating_window');
 
   SharedPreferences? _prefs;
   bool _initialized = false;
@@ -30,6 +35,7 @@ class SettingsRepository extends ChangeNotifier {
     _prefs = await SharedPreferences.getInstance();
     await _loadFromPrefs();
     _initialized = true;
+    _scheduleNativeSync();
   }
 
   Future<void> refreshFromDisk() async {
@@ -50,6 +56,7 @@ class SettingsRepository extends ChangeNotifier {
     _monitoring = value;
     await _prefs!.setBool('monitoring', value);
     notifyListeners();
+    _scheduleNativeSync();
   }
 
   Future<void> setVibrationEnabled(bool value) async {
@@ -58,6 +65,7 @@ class SettingsRepository extends ChangeNotifier {
     _vibrationEnabled = value;
     await _prefs!.setBool('vibration_enabled', value);
     notifyListeners();
+    _scheduleNativeSync();
   }
 
   Future<void> setThresholdSeconds(int value) async {
@@ -67,6 +75,7 @@ class SettingsRepository extends ChangeNotifier {
     _thresholdSeconds = newValue;
     await _prefs!.setInt('threshold_seconds', _thresholdSeconds);
     notifyListeners();
+    _scheduleNativeSync();
   }
 
   Future<void> setDndStartMinutes(int minutes) async {
@@ -75,6 +84,7 @@ class SettingsRepository extends ChangeNotifier {
     _dndStartMinutes = minutes;
     await _prefs!.setInt('dnd_start_minutes', minutes);
     notifyListeners();
+    _scheduleNativeSync();
   }
 
   Future<void> setDndEndMinutes(int minutes) async {
@@ -83,6 +93,7 @@ class SettingsRepository extends ChangeNotifier {
     _dndEndMinutes = minutes;
     await _prefs!.setInt('dnd_end_minutes', minutes);
     notifyListeners();
+    _scheduleNativeSync();
   }
 
   Future<void> resetTodayIfNeeded(DateTime now) async {
@@ -164,6 +175,33 @@ class SettingsRepository extends ChangeNotifier {
     _dndEndMinutes = 7 * 60;
     _today = _normalizeDate(DateTime.now());
     _todayRemindCount = 0;
+  }
+
+  Future<void> broadcastSettings() async {
+    await _ensureReady();
+    await _sendSettingsToNative();
+  }
+
+  void _scheduleNativeSync() {
+    if (!_initialized) return;
+    unawaited(_sendSettingsToNative());
+  }
+
+  Future<void> _sendSettingsToNative() async {
+    final payload = {
+      'monitoring': _monitoring,
+      'vibrationEnabled': _vibrationEnabled,
+      'thresholdSeconds': _thresholdSeconds,
+      'dndStartMinutes': _dndStartMinutes,
+      'dndEndMinutes': _dndEndMinutes,
+    };
+    try {
+      await _channel.invokeMethod('syncSettings', payload);
+    } catch (e) {
+      if (kDebugMode) {
+        debugPrint('Failed to sync settings to native layer: $e');
+      }
+    }
   }
 }
 

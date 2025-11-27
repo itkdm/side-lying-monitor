@@ -5,8 +5,10 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.graphics.PixelFormat
 import android.hardware.Sensor
@@ -59,6 +61,19 @@ class FloatingWindowService : Service(), SensorEventListener {
     private var reminderCheckRunnable: Runnable? = null
     private var vibrator: Vibrator? = null
     private var sharedPreferences: SharedPreferences? = null
+    private var vibrationEnabled = true
+    private var dndStartMinutes = 23 * 60
+    private var dndEndMinutes = 7 * 60
+    private var thresholdSecondsCache = 5
+
+    private val settingsReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == ACTION_SETTINGS_UPDATED) {
+                android.util.Log.d("FloatingWindow", "Received settings update broadcast")
+                updateSettingsFromIntent(intent)
+            }
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -84,6 +99,12 @@ class FloatingWindowService : Service(), SensorEventListener {
         
         // 初始化SharedPreferences
         sharedPreferences = getSharedPreferences("FlutterSharedPreferences", Context.MODE_PRIVATE)
+        loadSettingsFromPrefs()
+        try {
+            registerReceiver(settingsReceiver, IntentFilter(ACTION_SETTINGS_UPDATED))
+        } catch (e: Exception) {
+            android.util.Log.e("FloatingWindow", "Failed to register settings receiver: ${e.message}", e)
+        }
         
         // 创建Handler用于定时检查提醒
         reminderCheckHandler = Handler(Looper.getMainLooper())
@@ -94,6 +115,7 @@ class FloatingWindowService : Service(), SensorEventListener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_SHOW -> {
+                loadSettingsFromPrefs()
                 if (!isMonitoring) {
                     isMonitoring = true
                     // 确保在任何耗时操作之前尽早进入前台，避免启动超时
@@ -115,6 +137,7 @@ class FloatingWindowService : Service(), SensorEventListener {
                 stopSelf()
             }
             ACTION_UPDATE_STATE -> {
+                loadSettingsFromPrefs()
                 val sideLying = intent.getBooleanExtra(EXTRA_IS_SIDE_LYING, false)
 
                 if (!isMonitoring) {
@@ -330,37 +353,7 @@ class FloatingWindowService : Service(), SensorEventListener {
             // 必须已经确认是侧躺状态，并且有起始时间
             val start = sideLyingSince ?: return
 
-            // 从 SharedPreferences 读取阈值（优先 flutter.threshold_seconds），读取失败或类型不匹配则回退到 5 秒
-            val prefs = sharedPreferences
-            val thresholdSeconds = try {
-                if (prefs != null) {
-                    when {
-                        prefs.contains("flutter.threshold_seconds") -> {
-                            try {
-                                prefs.getInt("flutter.threshold_seconds", 5)
-                            } catch (e: ClassCastException) {
-                                // 兼容旧版本可能以 Long 存储的情况
-                                val longVal = prefs.getLong("flutter.threshold_seconds", 5L)
-                                if (longVal > Int.MAX_VALUE) Int.MAX_VALUE else longVal.toInt()
-                            }
-                        }
-                        prefs.contains("threshold_seconds") -> {
-                            try {
-                                prefs.getInt("threshold_seconds", 5)
-                            } catch (e: ClassCastException) {
-                                val longVal = prefs.getLong("threshold_seconds", 5L)
-                                if (longVal > Int.MAX_VALUE) Int.MAX_VALUE else longVal.toInt()
-                            }
-                        }
-                        else -> 5
-                    }.coerceIn(1, 300)
-                } else {
-                    5
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("FloatingWindow", "Error reading threshold from prefs, fallback to 5", e)
-                5
-            }
+            val thresholdSeconds = thresholdSecondsCache.coerceIn(1, 300)
 
             // 侧躺持续时间
             val elapsed = (now - start) / 1000
@@ -372,6 +365,15 @@ class FloatingWindowService : Service(), SensorEventListener {
                 return
             }
 
+            if (isInDnd(now, dndStartMinutes, dndEndMinutes)) {
+                android.util.Log.d(
+                    "FloatingWindow",
+                    "Currently in DND window ($dndStartMinutes-$dndEndMinutes), skip reminder"
+                )
+                sideLyingSince = now
+                return
+            }
+
             android.util.Log.d(
                 "FloatingWindow",
                 "Triggering reminder in service: elapsed=$elapsed, threshold=$thresholdSeconds (from prefs)"
@@ -380,30 +382,34 @@ class FloatingWindowService : Service(), SensorEventListener {
             // 重置计时起点，保证后续还能按周期继续提醒
             sideLyingSince = now
 
-            // 震动提醒：在悬浮窗模式下，始终尝试震动
-            try {
-                val hasVibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    vibrator?.hasVibrator() ?: false
-                } else {
-                    @Suppress("DEPRECATION")
-                    vibrator?.hasVibrator() ?: false
-                }
-
-                if (hasVibrator) {
-                    val pattern = longArrayOf(0, 120, 60, 120)
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                        vibrator?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+            // 震动提醒：尊重设置开关
+            if (vibrationEnabled) {
+                try {
+                    val hasVibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        vibrator?.hasVibrator() ?: false
                     } else {
                         @Suppress("DEPRECATION")
-                        vibrator?.vibrate(pattern, -1)
+                        vibrator?.hasVibrator() ?: false
                     }
-                    android.util.Log.d("FloatingWindow", "Vibration triggered from service")
-                } else {
-                    android.util.Log.w("FloatingWindow", "Vibrator not available in service")
+
+                    if (hasVibrator) {
+                        val pattern = longArrayOf(0, 120, 60, 120)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                            vibrator?.vibrate(VibrationEffect.createWaveform(pattern, -1))
+                        } else {
+                            @Suppress("DEPRECATION")
+                            vibrator?.vibrate(pattern, -1)
+                        }
+                        android.util.Log.d("FloatingWindow", "Vibration triggered from service")
+                    } else {
+                        android.util.Log.w("FloatingWindow", "Vibrator not available in service")
+                    }
+                } catch (e: Exception) {
+                    android.util.Log.e("FloatingWindow", "Vibration error in service: ${e.message}", e)
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                android.util.Log.e("FloatingWindow", "Vibration error in service: ${e.message}", e)
-                e.printStackTrace()
+            } else {
+                android.util.Log.d("FloatingWindow", "Vibration disabled, skip haptics")
             }
 
             // 更新统计（写入 SharedPreferences，供 Flutter 端读取）
@@ -417,6 +423,62 @@ class FloatingWindowService : Service(), SensorEventListener {
         }
     }
     
+    private fun updateSettingsFromIntent(intent: Intent?) {
+        intent ?: return
+        if (intent.hasExtra(EXTRA_VIBRATION_ENABLED)) {
+            vibrationEnabled = intent.getBooleanExtra(EXTRA_VIBRATION_ENABLED, vibrationEnabled)
+        }
+        if (intent.hasExtra(EXTRA_DND_START_MINUTES)) {
+            dndStartMinutes = intent.getIntExtra(EXTRA_DND_START_MINUTES, dndStartMinutes)
+        }
+        if (intent.hasExtra(EXTRA_DND_END_MINUTES)) {
+            dndEndMinutes = intent.getIntExtra(EXTRA_DND_END_MINUTES, dndEndMinutes)
+        }
+        if (intent.hasExtra(EXTRA_THRESHOLD_SECONDS)) {
+            thresholdSecondsCache = intent
+                .getIntExtra(EXTRA_THRESHOLD_SECONDS, thresholdSecondsCache)
+                .coerceIn(1, 300)
+        }
+        android.util.Log.d(
+            "FloatingWindow",
+            "Settings updated via broadcast: vibration=$vibrationEnabled, " +
+                "threshold=$thresholdSecondsCache, dnd=$dndStartMinutes-$dndEndMinutes"
+        )
+    }
+
+    private fun loadSettingsFromPrefs() {
+        val prefs = sharedPreferences ?: return
+        vibrationEnabled = readBooleanPref(prefs, "flutter.vibration_enabled", true)
+        thresholdSecondsCache = readIntPref(prefs, "flutter.threshold_seconds", 5).coerceIn(1, 300)
+        dndStartMinutes = readIntPref(prefs, "flutter.dnd_start_minutes", 23 * 60)
+        dndEndMinutes = readIntPref(prefs, "flutter.dnd_end_minutes", 7 * 60)
+    }
+
+    private fun readBooleanPref(
+        prefs: SharedPreferences,
+        key: String,
+        defaultValue: Boolean
+    ): Boolean {
+        return try {
+            prefs.getBoolean(key, defaultValue)
+        } catch (e: ClassCastException) {
+            defaultValue
+        }
+    }
+
+    private fun readIntPref(
+        prefs: SharedPreferences,
+        key: String,
+        defaultValue: Int
+    ): Int {
+        return try {
+            prefs.getInt(key, defaultValue)
+        } catch (e: ClassCastException) {
+            val longValue = prefs.getLong(key, defaultValue.toLong())
+            if (longValue > Int.MAX_VALUE) Int.MAX_VALUE else longValue.toInt()
+        }
+    }
+
     private fun isInDnd(now: Long, dndStartMinutes: Int, dndEndMinutes: Int): Boolean {
         val calendar = java.util.Calendar.getInstance()
         calendar.timeInMillis = now
@@ -705,6 +767,11 @@ class FloatingWindowService : Service(), SensorEventListener {
         stopSensorListening()
         stopReminderCheck()
         hideFloatingWindow()
+        try {
+            unregisterReceiver(settingsReceiver)
+        } catch (e: Exception) {
+            android.util.Log.w("FloatingWindow", "Receiver already unregistered: ${e.message}")
+        }
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()
@@ -716,7 +783,12 @@ class FloatingWindowService : Service(), SensorEventListener {
         const val ACTION_SHOW = "com.example.flutter_application_1.SHOW_FLOATING_WINDOW"
         const val ACTION_HIDE = "com.example.flutter_application_1.HIDE_FLOATING_WINDOW"
         const val ACTION_UPDATE_STATE = "com.example.flutter_application_1.UPDATE_STATE"
+        const val ACTION_SETTINGS_UPDATED = "com.example.flutter_application_1.SETTINGS_UPDATED"
         const val EXTRA_IS_SIDE_LYING = "is_side_lying"
+        const val EXTRA_VIBRATION_ENABLED = "extra_vibration_enabled"
+        const val EXTRA_THRESHOLD_SECONDS = "extra_threshold_seconds"
+        const val EXTRA_DND_START_MINUTES = "extra_dnd_start_minutes"
+        const val EXTRA_DND_END_MINUTES = "extra_dnd_end_minutes"
         private const val CHANNEL_ID = "floating_window_service_channel"
         private const val NOTIFICATION_ID = 1001
     }
