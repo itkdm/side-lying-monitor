@@ -46,10 +46,12 @@ void main() {
                 thresholdSeconds: threshold.round(),
                 dndStart: const TimeOfDay(hour: 23, minute: 0),
                 dndEnd: const TimeOfDay(hour: 7, minute: 0),
+                dndEnabled: true,
                 onVibrationChanged: (_) {},
                 onThresholdChanged: (value) => setState(() => threshold = value),
                 onDndStartChanged: (_) {},
                 onDndEndChanged: (_) {},
+                onDndEnabledChanged: (_) {},
               );
             },
           ),

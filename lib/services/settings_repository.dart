@@ -19,6 +19,7 @@ class SettingsRepository extends ChangeNotifier {
   int _thresholdSeconds = 5;
   int _dndStartMinutes = 23 * 60;
   int _dndEndMinutes = 7 * 60;
+  bool _dndEnabled = false;
   DateTime _today = _normalizeDate(DateTime.now());
   int _todayRemindCount = 0;
 
@@ -27,6 +28,7 @@ class SettingsRepository extends ChangeNotifier {
   int get thresholdSeconds => _thresholdSeconds;
   int get dndStartMinutes => _dndStartMinutes;
   int get dndEndMinutes => _dndEndMinutes;
+  bool get dndEnabled => _dndEnabled;
   DateTime get today => _today;
   int get todayRemindCount => _todayRemindCount;
 
@@ -96,6 +98,15 @@ class SettingsRepository extends ChangeNotifier {
     _scheduleNativeSync();
   }
 
+  Future<void> setDndEnabled(bool value) async {
+    await _ensureReady();
+    if (_dndEnabled == value) return;
+    _dndEnabled = value;
+    await _prefs!.setBool('dnd_enabled', value);
+    notifyListeners();
+    _scheduleNativeSync();
+  }
+
   Future<void> resetTodayIfNeeded(DateTime now) async {
     await _ensureReady();
     final normalized = _normalizeDate(now);
@@ -132,6 +143,7 @@ class SettingsRepository extends ChangeNotifier {
     _thresholdSeconds = _prefs!.getInt('threshold_seconds') ?? 5;
     _dndStartMinutes = _prefs!.getInt('dnd_start_minutes') ?? 23 * 60;
     _dndEndMinutes = _prefs!.getInt('dnd_end_minutes') ?? 7 * 60;
+    _dndEnabled = _prefs!.getBool('dnd_enabled') ?? false;
 
     final now = DateTime.now();
     final todayKey = _formatDate(now);
@@ -173,6 +185,7 @@ class SettingsRepository extends ChangeNotifier {
     _thresholdSeconds = 5;
     _dndStartMinutes = 23 * 60;
     _dndEndMinutes = 7 * 60;
+    _dndEnabled = false;
     _today = _normalizeDate(DateTime.now());
     _todayRemindCount = 0;
   }
@@ -194,6 +207,7 @@ class SettingsRepository extends ChangeNotifier {
       'thresholdSeconds': _thresholdSeconds,
       'dndStartMinutes': _dndStartMinutes,
       'dndEndMinutes': _dndEndMinutes,
+      'dndEnabled': _dndEnabled,
     };
     try {
       await _channel.invokeMethod('syncSettings', payload);

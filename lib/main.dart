@@ -13,6 +13,15 @@ import 'package:flutter_application_1/services/settings_repository.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:vibration/vibration.dart';
 
+const AndroidNotificationChannel _reminderNotificationChannel =
+    AndroidNotificationChannel(
+  'posture_guardian_channel',
+  '侧躺监测提醒',
+  description: '当你侧躺玩手机时，会收到健康提醒',
+  importance: Importance.high,
+  playSound: true,
+);
+
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const PostureGuardianApp());
@@ -89,6 +98,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   int _thresholdSeconds = 5; // 默认从 5 秒开始更适合 MVP 体验
   TimeOfDay _dndStart = const TimeOfDay(hour: 23, minute: 0);
   TimeOfDay _dndEnd = const TimeOfDay(hour: 7, minute: 0);
+  bool _dndEnabled = false;
 
   // 统计
   int _todayRemindCount = 0;
@@ -140,13 +150,16 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       },
     );
 
-    // 请求通知权限（Android 13+）
-    if (await _notifications
-            .resolvePlatformSpecificImplementation<
-                AndroidFlutterLocalNotificationsPlugin>()
-            ?.requestNotificationsPermission() ??
-        false) {
-      // 权限已授予
+    final androidNotifications = _notifications
+        .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin>();
+
+    if (androidNotifications != null) {
+      // 确保后台提醒所需的通知渠道已注册（Android 8.0+ 必须调用）
+      await androidNotifications
+          .createNotificationChannel(_reminderNotificationChannel);
+      // Android 13+ 动态通知权限
+      await androidNotifications.requestNotificationsPermission();
     }
   }
 
@@ -183,6 +196,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
         hour: _settingsRepo.dndEndMinutes ~/ 60,
         minute: _settingsRepo.dndEndMinutes % 60,
       );
+      _dndEnabled = _settingsRepo.dndEnabled;
       _today = _settingsRepo.today;
       _todayRemindCount = _settingsRepo.todayRemindCount;
     });
@@ -363,6 +377,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   }
 
   bool _isInDnd(DateTime now) {
+    if (!_dndEnabled) return false;
     final startMinutes = _dndStart.hour * 60 + _dndStart.minute;
     final endMinutes = _dndEnd.hour * 60 + _dndEnd.minute;
     final currentMinutes = now.hour * 60 + now.minute;
@@ -436,10 +451,10 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
 
   /// 后台时显示通知提醒
   Future<void> _showBackgroundNotification() async {
-    const androidDetails = AndroidNotificationDetails(
-      'posture_guardian_channel',
-      '侧躺监测提醒',
-      channelDescription: '当你侧躺玩手机时，会收到健康提醒',
+    final androidDetails = AndroidNotificationDetails(
+      _reminderNotificationChannel.id,
+      _reminderNotificationChannel.name,
+      channelDescription: _reminderNotificationChannel.description,
       importance: Importance.high,
       priority: Priority.high,
       showWhen: true,
@@ -451,7 +466,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       presentSound: true,
     );
 
-    const notificationDetails = NotificationDetails(
+    final notificationDetails = NotificationDetails(
       android: androidDetails,
       iOS: iosDetails,
     );
@@ -562,6 +577,13 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     unawaited(_settingsRepo.setDndEndMinutes(minutes));
   }
 
+  void _updateDndEnabled(bool value) {
+    setState(() {
+      _dndEnabled = value;
+    });
+    unawaited(_settingsRepo.setDndEnabled(value));
+  }
+
   @override
   Widget build(BuildContext context) {
     final pages = [
@@ -577,10 +599,12 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
         thresholdSeconds: _thresholdSeconds,
         dndStart: _dndStart,
         dndEnd: _dndEnd,
+        dndEnabled: _dndEnabled,
         onVibrationChanged: _updateVibration,
         onThresholdChanged: _updateThreshold,
         onDndStartChanged: _updateDndStart,
         onDndEndChanged: _updateDndEnd,
+        onDndEnabledChanged: _updateDndEnabled,
       ),
     ];
 

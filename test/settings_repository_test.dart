@@ -36,5 +36,16 @@ void main() {
     expect(repo.today.month, 11);
     expect(repo.today.day, 28);
   });
+
+  test('toggles DND enabled flag and persists to prefs', () async {
+    final repo = SettingsRepository.instance;
+    expect(repo.dndEnabled, isFalse);
+
+    await repo.setDndEnabled(true);
+    expect(repo.dndEnabled, isTrue);
+
+    await repo.refreshFromDisk();
+    expect(repo.dndEnabled, isTrue);
+  });
 }
 

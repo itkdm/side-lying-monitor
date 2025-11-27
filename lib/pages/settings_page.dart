@@ -10,20 +10,24 @@ class SettingsPage extends StatelessWidget {
     required this.thresholdSeconds,
     required this.dndStart,
     required this.dndEnd,
+    required this.dndEnabled,
     required this.onVibrationChanged,
     required this.onThresholdChanged,
     required this.onDndStartChanged,
     required this.onDndEndChanged,
+    required this.onDndEnabledChanged,
   });
 
   final bool vibrationEnabled;
   final int thresholdSeconds;
   final TimeOfDay dndStart;
   final TimeOfDay dndEnd;
+  final bool dndEnabled;
   final ValueChanged<bool> onVibrationChanged;
   final ValueChanged<double> onThresholdChanged;
   final ValueChanged<TimeOfDay> onDndStartChanged;
   final ValueChanged<TimeOfDay> onDndEndChanged;
+  final ValueChanged<bool> onDndEnabledChanged;
 
   String _formatTime(TimeOfDay time) {
     final hour = time.hour.toString().padLeft(2, '0');
@@ -151,18 +155,32 @@ class SettingsPage extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      '免打扰时段',
-                      style: theme.textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: 4),
-                    Text(
-                      '在该时间段内，不会弹出提醒或震动',
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white70,
-                      ),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '免打扰时段',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                color: Colors.white,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              '在该时间段内，不会弹出提醒或震动',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: Colors.white70,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Switch.adaptive(
+                          value: dndEnabled,
+                          onChanged: onDndEnabledChanged,
+                        ),
+                      ],
                     ),
                     const SizedBox(height: 12),
                     Row(
@@ -171,6 +189,7 @@ class SettingsPage extends StatelessWidget {
                         _DndTimeChip(
                           label: '开始',
                           timeText: _formatTime(dndStart),
+                          enabled: dndEnabled,
                           onTap: () async {
                             final picked = await showTimePicker(
                               context: context,
@@ -185,6 +204,7 @@ class SettingsPage extends StatelessWidget {
                         _DndTimeChip(
                           label: '结束',
                           timeText: _formatTime(dndEnd),
+                          enabled: dndEnabled,
                           onTap: () async {
                             final picked = await showTimePicker(
                               context: context,
@@ -234,25 +254,29 @@ class _DndTimeChip extends StatelessWidget {
   const _DndTimeChip({
     required this.label,
     required this.timeText,
+    required this.enabled,
     required this.onTap,
   });
 
   final String label;
   final String timeText;
+  final bool enabled;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
     return Expanded(
       child: GestureDetector(
-        onTap: onTap,
+        onTap: enabled ? onTap : null,
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            color: Colors.white.withValues(alpha: 0.06),
+            color: Colors.white
+                .withValues(alpha: enabled ? 0.06 : 0.02),
             border: Border.all(
-              color: Colors.white.withValues(alpha: 0.18),
+              color: Colors.white
+                  .withValues(alpha: enabled ? 0.18 : 0.08),
             ),
           ),
           child: Column(
@@ -271,7 +295,8 @@ class _DndTimeChip extends StatelessWidget {
                   Text(
                     timeText,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: Colors.white,
+                          color: Colors.white
+                              .withValues(alpha: enabled ? 1 : 0.5),
                           fontWeight: FontWeight.w600,
                         ),
                   ),

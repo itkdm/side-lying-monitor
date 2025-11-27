@@ -47,7 +47,8 @@ class MainActivity : FlutterActivity() {
                         vibrationEnabled = call.argument<Boolean>("vibrationEnabled") ?: true,
                         thresholdSeconds = call.argument<Int>("thresholdSeconds") ?: 5,
                         dndStartMinutes = call.argument<Int>("dndStartMinutes") ?: (23 * 60),
-                        dndEndMinutes = call.argument<Int>("dndEndMinutes") ?: (7 * 60)
+                        dndEndMinutes = call.argument<Int>("dndEndMinutes") ?: (7 * 60),
+                        dndEnabled = call.argument<Boolean>("dndEnabled") ?: false
                     )
                     result.success(true)
                 }
@@ -121,7 +122,8 @@ class MainActivity : FlutterActivity() {
         vibrationEnabled: Boolean,
         thresholdSeconds: Int,
         dndStartMinutes: Int,
-        dndEndMinutes: Int
+        dndEndMinutes: Int,
+        dndEnabled: Boolean
     ) {
         val intent = Intent(FloatingWindowService.ACTION_SETTINGS_UPDATED).apply {
             putExtra(FloatingWindowService.EXTRA_MONITORING, monitoring)
@@ -129,6 +131,7 @@ class MainActivity : FlutterActivity() {
             putExtra(FloatingWindowService.EXTRA_THRESHOLD_SECONDS, thresholdSeconds)
             putExtra(FloatingWindowService.EXTRA_DND_START_MINUTES, dndStartMinutes)
             putExtra(FloatingWindowService.EXTRA_DND_END_MINUTES, dndEndMinutes)
+            putExtra(FloatingWindowService.EXTRA_DND_ENABLED, dndEnabled)
         }
         sendBroadcast(intent)
     }

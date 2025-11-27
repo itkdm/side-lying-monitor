@@ -67,6 +67,7 @@ class FloatingWindowService : Service(), SensorEventListener {
     private var dndStartMinutes = 23 * 60
     private var dndEndMinutes = 7 * 60
     private var thresholdSecondsCache = 5
+    private var dndEnabled = false
 
     private val settingsReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -366,7 +367,7 @@ class FloatingWindowService : Service(), SensorEventListener {
                 return
             }
 
-            if (isInDnd(now, dndStartMinutes, dndEndMinutes)) {
+            if (dndEnabled && isInDnd(now, dndStartMinutes, dndEndMinutes)) {
                 android.util.Log.d(
                     "FloatingWindow",
                     "Currently in DND window ($dndStartMinutes-$dndEndMinutes), skip reminder"
@@ -434,6 +435,9 @@ class FloatingWindowService : Service(), SensorEventListener {
         if (intent.hasExtra(EXTRA_DND_END_MINUTES)) {
             dndEndMinutes = intent.getIntExtra(EXTRA_DND_END_MINUTES, dndEndMinutes)
         }
+        if (intent.hasExtra(EXTRA_DND_ENABLED)) {
+            dndEnabled = intent.getBooleanExtra(EXTRA_DND_ENABLED, dndEnabled)
+        }
         if (intent.hasExtra(EXTRA_THRESHOLD_SECONDS)) {
             thresholdSecondsCache = intent
                 .getIntExtra(EXTRA_THRESHOLD_SECONDS, thresholdSecondsCache)
@@ -446,7 +450,7 @@ class FloatingWindowService : Service(), SensorEventListener {
         android.util.Log.d(
             "FloatingWindow",
             "Settings updated via broadcast: vibration=$vibrationEnabled, " +
-                "threshold=$thresholdSecondsCache, dnd=$dndStartMinutes-$dndEndMinutes"
+                "threshold=$thresholdSecondsCache, dnd=$dndStartMinutes-$dndEndMinutes, dndEnabled=$dndEnabled"
         )
     }
 
@@ -475,6 +479,7 @@ class FloatingWindowService : Service(), SensorEventListener {
         thresholdSecondsCache = readIntPref(prefs, "flutter.threshold_seconds", 5).coerceIn(1, 300)
         dndStartMinutes = readIntPref(prefs, "flutter.dnd_start_minutes", 23 * 60)
         dndEndMinutes = readIntPref(prefs, "flutter.dnd_end_minutes", 7 * 60)
+        dndEnabled = readBooleanPref(prefs, "flutter.dnd_enabled", false)
     }
 
     private fun readBooleanPref(
@@ -815,6 +820,7 @@ class FloatingWindowService : Service(), SensorEventListener {
         const val EXTRA_THRESHOLD_SECONDS = "extra_threshold_seconds"
         const val EXTRA_DND_START_MINUTES = "extra_dnd_start_minutes"
         const val EXTRA_DND_END_MINUTES = "extra_dnd_end_minutes"
+        const val EXTRA_DND_ENABLED = "extra_dnd_enabled"
         private const val CHANNEL_ID = "floating_window_service_channel"
         private const val NOTIFICATION_ID = 1001
     }
