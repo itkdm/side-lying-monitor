@@ -7,6 +7,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_background_service_android/flutter_background_service_android.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_application_1/services/posture_monitor.dart';
+import 'package:flutter_application_1/services/posture_monitor.dart';
 import 'package:flutter_application_1/services/settings_repository.dart';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -384,21 +386,12 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   DateTime _today = DateTime.now();
 
   // 传感器 & 姿态检测
-  // 原始订阅
-  StreamSubscription<AccelerometerEvent>? _accelSub;
-  // 当前是否确认处于“稳定的侧躺状态”
+  late final PostureMonitor _postureMonitor =
+      PostureMonitor(sensorStream: accelerometerEvents);
+  StreamSubscription<PostureState>? _postureSubscription;
   bool _isSideLying = false;
   // 最近一次确认“稳定侧躺”起始时间（用于健康提醒计时）
   DateTime? _sideLyingSince;
-  // 候选侧躺开始时间（用于稳定期判断）
-  DateTime? _sideCandidateSince;
-  // 上一次重力模长（用于检测大幅姿势变化）
-  double? _lastG;
-  // 指数平滑后的重力方向（低通滤波）
-  double _avgNx = 0;
-  double _avgNy = 0;
-  double _avgNz = 1;
-  double _avgG = 9.8;
   Timer? _checkTimer;
 
   // 通知服务
@@ -494,14 +487,14 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
 
   void _handleMonitoringPipeline(bool monitoringEnabled) {
     if (monitoringEnabled) {
-      if (!_isInBackground && _accelSub == null) {
+      if (!_isInBackground && _postureSubscription == null) {
         _startSensorListening();
       }
       if (_isInBackground && !_isFloatingWindowVisible) {
         unawaited(_showFloatingWindow());
       }
     } else {
-      if (_accelSub != null) {
+      if (_postureSubscription != null) {
         _stopSensorListening();
       }
       if (_isFloatingWindowVisible) {
@@ -516,9 +509,9 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     if (_settingsReady) {
       _settingsRepo.removeListener(_settingsListener);
     }
-    _accelSub?.cancel();
+    _postureSubscription?.cancel();
+    unawaited(_postureMonitor.dispose());
     _checkTimer?.cancel();
-    _lastG = null;
     // 清理悬浮窗
     if (_isFloatingWindowVisible) {
       FloatingWindowManager.hideFloatingWindow();
@@ -549,7 +542,7 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
         _hideFloatingWindow();
       }
       // 确保传感器监听正在运行（Flutter层）
-      if (_monitoring && _accelSub == null) {
+      if (_monitoring && _postureSubscription == null) {
         _startSensorListening();
       }
       // 重新加载统计数据（可能原生服务更新了）
@@ -668,114 +661,36 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   }
   
   void _startSensorListening() {
-    _accelSub?.cancel();
+    _postureMonitor.start();
+    _postureSubscription ??=
+        _postureMonitor.stateStream.listen(_handlePostureState);
+
     _checkTimer?.cancel();
-    _sideCandidateSince = null;
-    _lastG = null;
-
-    _accelSub = accelerometerEvents.listen((event) {
-      // 使用重力方向 + 低通滤波 + 稳定期进行更精细、宽松的姿态判断
-      final ax = event.x;
-      final ay = event.y;
-      final az = event.z;
-      final g = sqrt(ax * ax + ay * ay + az * az);
-
-      if (g < 1e-3) {
-        // 数据异常，直接忽略
-        return;
-      }
-
-      // 归一化重力分量（-1 ~ 1），只关心方向
-      final nx = ax / g;
-      final ny = ay / g;
-      final nz = az / g;
-
-      // 指数平滑（低通滤波），减弱短暂抖动的影响
-      const alpha = 0.15; // 越小越平滑
-      _avgNx = alpha * nx + (1 - alpha) * _avgNx;
-      _avgNy = alpha * ny + (1 - alpha) * _avgNy;
-      _avgNz = alpha * nz + (1 - alpha) * _avgNz;
-      _avgG = alpha * g + (1 - alpha) * _avgG;
-
-      // 通过 g 的变化幅度检测较大姿势变换（例如突然翻身、起身）
-      double deltaG = 0;
-      if (_lastG != null) {
-        deltaG = (g - _lastG!).abs();
-      }
-      _lastG = g;
-
-      // 如果发生较大的姿势变化，则重置候选与确认状态，重新进入判定流程
-      if (deltaG > 0.8) {
-        _sideCandidateSince = null;
-        if (_isSideLying) {
-          setState(() {
-            _isSideLying = false;
-            _sideLyingSince = null;
-          });
-          _updateFloatingWindowState();
-        }
-      }
-
-      // 判定 1：基于“平滑后的”重力方向（更抽象，适配更多设备）
-      //  - z 分量不占主导：说明不是平放在桌面 / 天花板上
-      //  - x 或 y 分量占主导：说明手机被明显“侧着”拿着
-      final bool isScreenRoughlyVertical = _avgNz.abs() < 0.8;
-      final bool isGravityMostlySide =
-          _avgNx.abs() > 0.4 || _avgNy.abs() > 0.4; // 左右或前后方向占主导
-      final bool isSideByDirection =
-          isScreenRoughlyVertical && isGravityMostlySide;
-
-      // 判定 2：基于原始加速度值的宽松判断（与最初的逻辑兼容，提供冗余保障）
-      final bool isSideByRaw = ax.abs() > 6.5 && az.abs() < 5.0;
-
-      final isSide = isSideByDirection || isSideByRaw;
-
-      final now = DateTime.now();
-
-      if (isSide) {
-        // 第一次进入候选“侧躺区间”
-        _sideCandidateSince ??= now;
-
-        final stableDuration =
-            now.difference(_sideCandidateSince!).inSeconds;
-
-        // 需要先经过一个"稳定期"（例如 2 秒），再真正确认进入侧躺
-        const stableThresholdSeconds = 2;
-        if (!_isSideLying && stableDuration >= stableThresholdSeconds) {
-          setState(() {
-            _isSideLying = true;
-            // 确认进入侧躺的时间点，用于后续健康提醒计时（再叠加 _thresholdSeconds）
-            _sideLyingSince = now;
-          });
-          // 第一次进入"稳定的侧躺状态"时，给一次轻微震动反馈
-          _vibrateOnce(durationMs: 50);
-          // 更新悬浮窗状态
-          _updateFloatingWindowState();
-        }
-      } else {
-        // 退出候选与确认状态
-        if (_isSideLying) {
-          setState(() {
-            _sideCandidateSince = null;
-            _isSideLying = false;
-            _sideLyingSince = null;
-          });
-          // 更新悬浮窗状态
-          _updateFloatingWindowState();
-        } else {
-          _sideCandidateSince = null;
-        }
-      }
-    });
-
     _checkTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _maybeTriggerReminder();
     });
   }
 
+  void _handlePostureState(PostureState state) {
+    if (!mounted) return;
+    final bool previous = _isSideLying;
+    setState(() {
+      _isSideLying = state.isSideLying;
+      _sideLyingSince = state.sideLyingSince;
+    });
+    if (state.isSideLying && !previous) {
+      _vibrateOnce(durationMs: 50);
+    }
+    if (!_isSideLying) {
+      _sideLyingSince = null;
+    }
+    _updateFloatingWindowState();
+  }
+
   void _stopSensorListening() {
-    _accelSub?.cancel();
-    _accelSub = null;
+    _postureMonitor.stop();
+    _postureSubscription?.cancel();
+    _postureSubscription = null;
     _checkTimer?.cancel();
     _checkTimer = null;
     _isSideLying = false;
