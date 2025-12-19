@@ -15,51 +15,109 @@ import 'package:flutter_application_1/services/posture_monitor.dart';
 import 'package:flutter_application_1/services/settings_repository.dart';
 import 'package:flutter_application_1/services/custom_posture_repository.dart';
 import 'package:flutter_application_1/services/floating_window_manager.dart';
+import 'package:flutter_application_1/services/theme_repository.dart';
 import 'package:flutter_application_1/utils/logger.dart';
+import 'dart:ui';
 
-void main() {
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // 初始化主题服务
+  await ThemeRepository.instance.init();
   runApp(const PostureGuardianApp());
 }
 
-/// 应用主入口，配置全局暗色玻璃拟态风�?
-class PostureGuardianApp extends StatelessWidget {
+/// 应用主入口，支持主题切换
+class PostureGuardianApp extends StatefulWidget {
   const PostureGuardianApp({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    const primaryColor = Color(0xFF4361EE); // 靛青
-    const background = Color(0xFF1B1B1E); // 深枪�?
+  State<PostureGuardianApp> createState() => _PostureGuardianAppState();
+}
 
-    final colorScheme = ColorScheme.fromSeed(
-      seedColor: primaryColor,
+class _PostureGuardianAppState extends State<PostureGuardianApp> {
+  final ThemeRepository _themeRepo = ThemeRepository.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _themeRepo.addListener(_onThemeChanged);
+  }
+
+  @override
+  void dispose() {
+    _themeRepo.removeListener(_onThemeChanged);
+    super.dispose();
+  }
+
+  void _onThemeChanged() {
+    setState(() {});
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isDark = _themeRepo.isDark;
+    
+    // 深色主题（保留现有风格）
+    const darkPrimaryColor = Color(0xFF4361EE); // 靛青
+    const darkBackground = Color(0xFF1B1B1E); // 深枪灰
+    const darkBackgroundEnd = Color(0xFF121218);
+    const darkSurface = Color(0xFF22232A);
+
+    // 亮色主题（新增，柔和配色）
+    const lightPrimaryColor = Color(0xFF4361EE); // 保持主色一致
+    const lightBackground = Color(0xFFF5F7FA); // 浅灰蓝
+    const lightBackgroundEnd = Color(0xFFE8ECF1);
+    const lightSurface = Color(0xFFFFFFFF);
+
+    final darkColorScheme = ColorScheme.fromSeed(
+      seedColor: darkPrimaryColor,
       brightness: Brightness.dark,
-      primary: primaryColor,
-      surface: const Color(0xFF22232A),
+      primary: darkPrimaryColor,
+      surface: darkSurface,
     );
+
+    final lightColorScheme = ColorScheme.fromSeed(
+      seedColor: lightPrimaryColor,
+      brightness: Brightness.light,
+      primary: lightPrimaryColor,
+      surface: lightSurface,
+    );
+
+    final currentBackground = isDark ? darkBackground : lightBackground;
+    final currentBackgroundEnd = isDark ? darkBackgroundEnd : lightBackgroundEnd;
 
     return MaterialApp(
       title: '枕边哨',
       debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.dark,
+      themeMode: isDark ? ThemeMode.dark : ThemeMode.light,
       theme: ThemeData(
-        colorScheme: colorScheme,
+        colorScheme: lightColorScheme,
         useMaterial3: true,
-        scaffoldBackgroundColor: background,
+        scaffoldBackgroundColor: lightBackground,
+        fontFamily: 'Roboto',
+      ),
+      darkTheme: ThemeData(
+        colorScheme: darkColorScheme,
+        useMaterial3: true,
+        scaffoldBackgroundColor: darkBackground,
         fontFamily: 'Roboto',
       ),
       builder: (context, child) {
-        // 配置状态栏样式，使其与首页背景一�?
-        // 同时确保背景色立即显示，避免空白页面
         return Container(
-          color: background, // 立即显示背景�?
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [currentBackground, currentBackgroundEnd],
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+            ),
+          ),
           child: AnnotatedRegion<SystemUiOverlayStyle>(
-            value: const SystemUiOverlayStyle(
-              statusBarColor: Colors.transparent, // 透明状态栏
-              statusBarIconBrightness: Brightness.light, // 浅色图标（白色）
-              statusBarBrightness: Brightness.dark, // iOS 状态栏样式
-              systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜�?
-              systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜�?
+            value: SystemUiOverlayStyle(
+              statusBarColor: Colors.transparent,
+              statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+              statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
+              systemNavigationBarColor: currentBackground,
+              systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
             ),
             child: child!,
           ),
@@ -618,6 +676,11 @@ class _FrostedBottomNavBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = ThemeRepository.instance.isDark;
+    final navBgColor = isDark ? Colors.black : Colors.white;
+    final navBorderColor = isDark ? Colors.white : Colors.black;
+    final iconColor = isDark ? Colors.white : Colors.black;
+    
     const items = [
       _NavItem(icon: Icons.home_rounded, label: '首页'),
       _NavItem(icon: Icons.settings_rounded, label: '设置'),
@@ -632,9 +695,9 @@ class _FrostedBottomNavBar extends StatelessWidget {
           child: Container(
             height: 64,
             decoration: BoxDecoration(
-            color: Colors.black.withOpacity(0.45),
+            color: navBgColor.withOpacity(isDark ? 0.45 : 0.7),
               border: Border.all(
-              color: Colors.white.withOpacity(0.14),
+              color: navBorderColor.withOpacity(isDark ? 0.14 : 0.1),
               ),
             ),
             child: Row(
@@ -664,8 +727,8 @@ class _FrostedBottomNavBar extends StatelessWidget {
                             item.icon,
                             size: selected ? 26 : 22,
                             color: selected
-                                ? Colors.white
-                                : Colors.white.withOpacity(0.6),
+                                ? iconColor
+                                : iconColor.withOpacity(0.6),
                           ),
                           const SizedBox(height: 4),
                           AnimatedDefaultTextStyle(
@@ -675,8 +738,8 @@ class _FrostedBottomNavBar extends StatelessWidget {
                               fontWeight:
                                   selected ? FontWeight.w600 : FontWeight.w400,
                               color: selected
-                                  ? Colors.white
-                                  : Colors.white.withOpacity(0.6),
+                                  ? iconColor
+                                  : iconColor.withOpacity(0.6),
                             ),
                             child: Text(item.label),
                           ),

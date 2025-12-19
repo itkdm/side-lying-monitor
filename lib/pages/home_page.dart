@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../widgets/glass_card.dart';
+import '../services/theme_repository.dart';
 
 /// 首页：核心监测控�?+ 今日提醒次数
 class HomePage extends StatelessWidget {
@@ -25,25 +26,22 @@ class HomePage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    const primary = Color(0xFF4361EE);
+    final isDark = ThemeRepository.instance.isDark;
+    final primary = theme.colorScheme.primary;
     const haloColor = Color(0xFF6BAA75); // 鼠尾草绿
+    final textColor = isDark ? Colors.white : const Color(0xFF1A1A1A);
+    final textColorSecondary = isDark ? Colors.white70 : const Color(0xFF666666);
 
     return AnnotatedRegion<SystemUiOverlayStyle>(
-      value: const SystemUiOverlayStyle(
-        statusBarColor: Colors.transparent, // 透明状态栏
-        statusBarIconBrightness: Brightness.light, // 浅色图标（白色）
-        statusBarBrightness: Brightness.dark, // iOS 状态栏样式
-        systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜�?
-        systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜�?
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
+        statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
+        systemNavigationBarColor: theme.scaffoldBackgroundColor,
+        systemNavigationBarIconBrightness: isDark ? Brightness.light : Brightness.dark,
       ),
       child: Container(
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            colors: [Color(0xFF1B1B1E), Color(0xFF121218)],
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-          ),
-        ),
+        // 背景渐变已在 main.dart 的 builder 中处理，这里不需要重复
         child: SafeArea(
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
@@ -55,7 +53,7 @@ class HomePage extends StatelessWidget {
                   '枕边哨',
                   style: theme.textTheme.titleLarge?.copyWith(
                     fontWeight: FontWeight.w600,
-                    color: Colors.white,
+                    color: textColor,
                     fontSize: 24,
                   ),
                   textAlign: TextAlign.center,
@@ -105,7 +103,7 @@ class HomePage extends StatelessWidget {
                                   Text(
                                     '今日提醒次数',
                                     style: theme.textTheme.bodySmall?.copyWith(
-                                      color: Colors.white70,
+                                      color: textColorSecondary,
                                       fontSize: 12,
                                     ),
                                   ),
@@ -113,7 +111,7 @@ class HomePage extends StatelessWidget {
                                   Text(
                                     '$remindCount 次',
                                     style: theme.textTheme.headlineMedium?.copyWith(
-                                      color: Colors.white,
+                                      color: textColor,
                                       fontWeight: FontWeight.bold,
                                       fontSize: 28,
                                     ),
@@ -125,10 +123,14 @@ class HomePage extends StatelessWidget {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             decoration: BoxDecoration(
-                              color: Colors.white.withOpacity(0.6),
+                              color: isDark 
+                                  ? Colors.white.withOpacity(0.6)
+                                  : Colors.black.withOpacity(0.05),
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                color: Colors.white.withOpacity(0.6),
+                                color: isDark 
+                                    ? Colors.white.withOpacity(0.6)
+                                    : Colors.black.withOpacity(0.1),
                               ),
                             ),
                             child: Column(
@@ -137,7 +139,7 @@ class HomePage extends StatelessWidget {
                                 Text(
                                   '触发条件',
                                   style: theme.textTheme.bodySmall?.copyWith(
-                                    color: Colors.white70,
+                                    color: textColorSecondary,
                                     fontSize: 11,
                                   ),
                                 ),
@@ -145,7 +147,7 @@ class HomePage extends StatelessWidget {
                                 Text(
                                   '超过 $thresholdSeconds 秒',
                                   style: theme.textTheme.bodyMedium?.copyWith(
-                                    color: Colors.white,
+                                    color: textColor,
                                     fontWeight: FontWeight.w600,
                                     fontSize: 14,
                                   ),
@@ -195,7 +197,7 @@ class HomePage extends StatelessWidget {
                                   Text(
                                     '正在检测侧躺姿势',
                                     style: theme.textTheme.titleSmall?.copyWith(
-                                      color: Colors.white,
+                                      color: textColor,
                                       fontWeight: FontWeight.w700,
                                       fontSize: 15,
                                     ),
@@ -215,7 +217,7 @@ class HomePage extends StatelessWidget {
                               Text(
                                 '保持当前姿势时，此提示会一直显示，超过设定时长将弹出健康提醒。',
                                 style: theme.textTheme.bodySmall?.copyWith(
-                                  color: Colors.white70,
+                                  color: textColorSecondary,
                                   fontSize: 12,
                                   height: 1.4,
                                 ),
@@ -378,6 +380,11 @@ class ReminderDialog extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = ThemeRepository.instance.isDark;
+    final dialogBgColor = isDark ? Colors.white : Colors.white;
+    final textColor = isDark ? const Color(0xFF333333) : const Color(0xFF1A1A1A);
+    final textColorSecondary = isDark ? const Color(0xFF555555) : const Color(0xFF666666);
+    final textColorTertiary = isDark ? const Color(0xFF888888) : const Color(0xFF999999);
 
     return ClipRRect(
       borderRadius: BorderRadius.circular(24),
@@ -389,8 +396,8 @@ class ReminderDialog extends StatelessWidget {
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                  Colors.white.withOpacity(0.6),
-                  Colors.white.withOpacity(0.6),
+                  dialogBgColor.withOpacity(isDark ? 0.6 : 0.95),
+                  dialogBgColor.withOpacity(isDark ? 0.6 : 0.95),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
@@ -416,7 +423,7 @@ class ReminderDialog extends StatelessWidget {
               Text(
                 '姿势不对哦～',
                 style: theme.textTheme.titleLarge?.copyWith(
-                  color: const Color(0xFF333333),
+                  color: textColor,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -424,14 +431,14 @@ class ReminderDialog extends StatelessWidget {
               Text(
                 '你可能正侧躺玩手机，试着稍微调整一下姿势，给颈椎一点温柔。',
                 style: theme.textTheme.bodyMedium?.copyWith(
-                  color: const Color(0xFF555555),
+                  color: textColorSecondary,
                 ),
               ),
               const SizedBox(height: 12),
               Text(
                 '可在设置中调整提醒时间和免打扰时段。',
                 style: theme.textTheme.bodySmall?.copyWith(
-                  color: const Color(0xFF888888),
+                  color: textColorTertiary,
                 ),
               ),
               const SizedBox(height: 16),
@@ -439,10 +446,10 @@ class ReminderDialog extends StatelessWidget {
                 alignment: Alignment.centerRight,
                 child: TextButton(
                   onPressed: onClose,
-                  child: const Text(
+                  child: Text(
                     '知道了',
                     style: TextStyle(
-                      color: Color(0xFF4361EE),
+                      color: theme.colorScheme.primary,
                       fontWeight: FontWeight.w600,
                     ),
                   ),

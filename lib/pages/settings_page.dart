@@ -2,6 +2,7 @@
 import 'package:flutter_application_1/services/custom_posture_repository.dart';
 import 'package:flutter_application_1/pages/custom_posture_page.dart';
 import '../widgets/glass_card.dart';
+import '../services/theme_repository.dart';
 
 /// 设置页：震动开关、时间阈值、免打扰时段
 class SettingsPage extends StatelessWidget {
@@ -43,15 +44,13 @@ class SettingsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = ThemeRepository.instance.isDark;
+    final textColor = isDark ? Colors.white : const Color(0xFF1A1A1A);
+    final textColorSecondary = isDark ? Colors.white70 : const Color(0xFF666666);
+    final textColorTertiary = isDark ? Colors.white54 : const Color(0xFF999999);
 
     return Container(
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          colors: [Color(0xFF1B1B1E), Color(0xFF121218)],
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-        ),
-      ),
+      // 背景渐变已在 main.dart 的 builder 中处理，这里不需要重复
       child: SafeArea(
         child: SingleChildScrollView(
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
@@ -63,14 +62,14 @@ class SettingsPage extends StatelessWidget {
                 '设置',
                 style: theme.textTheme.titleLarge?.copyWith(
                   fontWeight: FontWeight.w600,
-                  color: Colors.white,
+                  color: textColor,
                 ),
               ),
               const SizedBox(height: 4),
               Text(
                 '根据你的习惯，调节提醒的方式',
                 style: theme.textTheme.bodyMedium?.copyWith(
-                  color: Colors.white70,
+                  color: textColorSecondary,
                 ),
               ),
               const SizedBox(height: 24),
@@ -87,14 +86,14 @@ class SettingsPage extends StatelessWidget {
                             Text(
                               '震动提醒',
                               style: theme.textTheme.titleMedium?.copyWith(
-                                color: Colors.white,
+                                color: textColor,
                               ),
                             ),
                             const SizedBox(height: 4),
                             Text(
                               '轻柔震动，像朋友轻拍你的肩膀',
                               style: theme.textTheme.bodySmall?.copyWith(
-                                color: Colors.white70,
+                                color: textColorSecondary,
                               ),
                             ),
                           ],
@@ -116,14 +115,14 @@ class SettingsPage extends StatelessWidget {
                     Text(
                       '侧躺持续时间阈值',
                       style: theme.textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
+                        color: textColor,
                       ),
                     ),
                     const SizedBox(height: 4),
                     Text(
                       '仅当侧躺持续达到该时长才提醒，避免误判',
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white70,
+                        color: textColorSecondary,
                       ),
                     ),
                     const SizedBox(height: 12),
@@ -133,14 +132,14 @@ class SettingsPage extends StatelessWidget {
                         Text(
                           '${thresholdSeconds.toString()} 秒',
                           style: theme.textTheme.titleLarge?.copyWith(
-                            color: Colors.white,
+                            color: textColor,
                             fontWeight: FontWeight.bold,
                           ),
                         ),
                         Text(
                           '5 - 120 秒',
                           style: theme.textTheme.bodySmall?.copyWith(
-                            color: Colors.white54,
+                            color: textColorTertiary,
                           ),
                         ),
                       ],
@@ -169,14 +168,14 @@ class SettingsPage extends StatelessWidget {
                             Text(
                               '免打扰时段',
                               style: theme.textTheme.titleMedium?.copyWith(
-                                color: Colors.white,
+                                color: textColor,
                               ),
                             ),
                             const SizedBox(height: 4),
                             Text(
                               '在该时间段内，不会弹出提醒或震动',
                               style: theme.textTheme.bodySmall?.copyWith(
-                                color: Colors.white70,
+                                color: textColorSecondary,
                               ),
                             ),
                           ],
@@ -240,7 +239,7 @@ class SettingsPage extends StatelessWidget {
                             Text(
                               '自定义侧躺姿势',
                               style: theme.textTheme.titleMedium?.copyWith(
-                                color: Colors.white,
+                                color: textColor,
                               ),
                             ),
                         Switch.adaptive(
@@ -253,11 +252,51 @@ class SettingsPage extends StatelessWidget {
                         Text(
                           '为侧躺录制自定义姿势数据进行监测，或使用默认系统算法',
                           style: theme.textTheme.bodySmall?.copyWith(
-                            color: Colors.white70,
+                            color: textColorSecondary,
                           ),
                         ),
                         const SizedBox(height: 16),
                         _CustomPostureList(),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+              AnimatedBuilder(
+                animation: ThemeRepository.instance,
+                builder: (context, _) {
+                  final themeRepo = ThemeRepository.instance;
+                  return GlassCard(
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              '主题模式',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                color: textColor,
+                              ),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              themeRepo.isDark ? '深色模式' : '亮色模式',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: textColorSecondary,
+                              ),
+                            ),
+                          ],
+                        ),
+                        Switch.adaptive(
+                          value: themeRepo.isDark,
+                          onChanged: (value) {
+                            themeRepo.setThemeMode(
+                              value ? AppThemeMode.dark : AppThemeMode.light,
+                            );
+                          },
+                        ),
                       ],
                     ),
                   );
@@ -271,14 +310,14 @@ class SettingsPage extends StatelessWidget {
                     Text(
                       '隐私与数据说明',
                       style: theme.textTheme.titleMedium?.copyWith(
-                        color: Colors.white,
+                        color: textColor,
                       ),
                     ),
                     const SizedBox(height: 8),
                     Text(
                       '本 App 仅使用设备传感器判断姿态，不采集、不上传任何个人隐私数据。所有设置与统计仅保存在本机，可随时卸载清除。',
                       style: theme.textTheme.bodySmall?.copyWith(
-                        color: Colors.white70,
+                        color: textColorSecondary,
                       ),
                     ),
                   ],
@@ -308,6 +347,17 @@ class _DndTimeChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final isDark = ThemeRepository.instance.isDark;
+    final textColor = isDark ? Colors.white : const Color(0xFF1A1A1A);
+    final textColorSecondary = isDark ? Colors.white70 : const Color(0xFF666666);
+    final borderColor = isDark 
+        ? Colors.white.withOpacity(enabled ? 0.18 : 0.08)
+        : Colors.black.withOpacity(enabled ? 0.15 : 0.05);
+    final bgColor = isDark
+        ? Colors.white.withOpacity(enabled ? 0.06 : 0.02)
+        : Colors.black.withOpacity(enabled ? 0.03 : 0.01);
+
     return Expanded(
       child: GestureDetector(
         onTap: enabled ? onTap : null,
@@ -315,20 +365,16 @@ class _DndTimeChip extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
-            color: Colors.white
-                .withOpacity(enabled ? 0.06 : 0.02),
-            border: Border.all(
-              color: Colors.white
-                  .withOpacity(enabled ? 0.18 : 0.08),
-            ),
+            color: bgColor,
+            border: Border.all(color: borderColor),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
                 label,
-                style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Colors.white70,
+                style: theme.textTheme.bodySmall?.copyWith(
+                      color: textColorSecondary,
                     ),
               ),
               const SizedBox(height: 4),
@@ -337,16 +383,15 @@ class _DndTimeChip extends StatelessWidget {
                 children: [
                   Text(
                     timeText,
-                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                          color: Colors.white
-                              .withOpacity(enabled ? 1 : 0.5),
+                    style: theme.textTheme.titleMedium?.copyWith(
+                          color: textColor.withOpacity(enabled ? 1 : 0.5),
                           fontWeight: FontWeight.w600,
                         ),
                   ),
-                  const Icon(
+                  Icon(
                     Icons.keyboard_arrow_down_rounded,
                     size: 18,
-                    color: Colors.white70,
+                    color: textColorSecondary,
                   ),
                 ],
               ),
@@ -457,6 +502,10 @@ class _CustomPostureListState extends State<_CustomPostureList> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = ThemeRepository.instance.isDark;
+    final textColor = isDark ? Colors.white : const Color(0xFF1A1A1A);
+    final textColorSecondary = isDark ? Colors.white70 : const Color(0xFF666666);
+    final textColorTertiary = isDark ? Colors.white54 : const Color(0xFF999999);
     final postures = _repository.customPostures;
 
     return Column(
@@ -468,7 +517,7 @@ class _CustomPostureListState extends State<_CustomPostureList> {
             child: Text(
                       '暂无自定义侧躺姿势',
               style: theme.textTheme.bodySmall?.copyWith(
-                color: Colors.white54,
+                color: textColorTertiary,
               ),
               textAlign: TextAlign.center,
             ),
@@ -481,9 +530,13 @@ class _CustomPostureListState extends State<_CustomPostureList> {
                 padding: const EdgeInsets.all(12),
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(12),
-                  color: Colors.white.withOpacity(0.05),
+                  color: isDark 
+                      ? Colors.white.withOpacity(0.05)
+                      : Colors.black.withOpacity(0.03),
                   border: Border.all(
-                    color: Colors.white.withOpacity(0.1),
+                    color: isDark 
+                        ? Colors.white.withOpacity(0.1)
+                        : Colors.black.withOpacity(0.08),
                   ),
                 ),
                 child: Row(
@@ -495,7 +548,7 @@ class _CustomPostureListState extends State<_CustomPostureList> {
                           Text(
                             posture.name,
                             style: theme.textTheme.bodyMedium?.copyWith(
-                              color: Colors.white,
+                              color: textColor,
                               fontWeight: FontWeight.w600,
                             ),
                           ),
@@ -503,7 +556,7 @@ class _CustomPostureListState extends State<_CustomPostureList> {
                           Text(
                             '创建于 ${_formatDate(posture.createdAt)}',
                             style: theme.textTheme.bodySmall?.copyWith(
-                              color: Colors.white54,
+                              color: textColorTertiary,
                             ),
                           ),
                         ],
@@ -528,8 +581,12 @@ class _CustomPostureListState extends State<_CustomPostureList> {
                 icon: const Icon(Icons.add),
                 label: const Text('添加姿势'),
                 style: OutlinedButton.styleFrom(
-                  foregroundColor: Colors.white,
-                  side: BorderSide(color: Colors.white.withOpacity(0.3)),
+                  foregroundColor: textColor,
+                  side: BorderSide(
+                    color: isDark 
+                        ? Colors.white.withOpacity(0.3)
+                        : Colors.black.withOpacity(0.2),
+                  ),
                 ),
               ),
             ),

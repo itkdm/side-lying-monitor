@@ -1,6 +1,7 @@
 ﻿import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import '../services/theme_repository.dart';
 
 /// Shared frosted glass card used across pages to keep UI consistent.
 class GlassCard extends StatelessWidget {
@@ -10,6 +11,9 @@ class GlassCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final isDark = ThemeRepository.instance.isDark;
+    final glassColor = isDark ? Colors.white : Colors.black;
+    
     return ClipRRect(
       borderRadius: BorderRadius.circular(20),
       child: BackdropFilter(
@@ -20,14 +24,14 @@ class GlassCard extends StatelessWidget {
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                Colors.white.withOpacity(0.08),
-                Colors.white.withOpacity(0.02),
+                glassColor.withOpacity(isDark ? 0.08 : 0.05),
+                glassColor.withOpacity(isDark ? 0.02 : 0.01),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             border: Border.all(
-              color: Colors.white.withOpacity(0.16),
+              color: glassColor.withOpacity(isDark ? 0.16 : 0.1),
               width: 1,
             ),
           ),
