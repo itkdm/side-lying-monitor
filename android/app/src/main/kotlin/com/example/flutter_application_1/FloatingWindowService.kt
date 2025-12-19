@@ -18,6 +18,7 @@ import android.hardware.SensorEventListener
 import android.hardware.SensorManager
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
@@ -30,14 +31,75 @@ import android.view.LayoutInflater
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
+import android.view.Surface
 import android.widget.ImageView
 import android.widget.TextView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
+import io.flutter.plugin.common.EventChannel
 import kotlin.math.abs
 import kotlin.math.sqrt
+import kotlin.math.atan2
 
 class FloatingWindowService : Service(), SensorEventListener {
+    companion object {
+        // 常量定义
+        const val ACTION_SHOW = "com.example.flutter_application_1.SHOW_FLOATING_WINDOW"
+        const val ACTION_HIDE = "com.example.flutter_application_1.HIDE_FLOATING_WINDOW"
+        const val ACTION_UPDATE_STATE = "com.example.flutter_application_1.UPDATE_STATE"
+        const val ACTION_SETTINGS_UPDATED = "com.example.flutter_application_1.SETTINGS_UPDATED"
+        const val EXTRA_IS_SIDE_LYING = "is_side_lying"
+        const val EXTRA_MONITORING = "extra_monitoring"
+        const val EXTRA_VIBRATION_ENABLED = "extra_vibration_enabled"
+        const val EXTRA_THRESHOLD_SECONDS = "extra_threshold_seconds"
+        const val EXTRA_DND_START_MINUTES = "extra_dnd_start_minutes"
+        const val EXTRA_DND_END_MINUTES = "extra_dnd_end_minutes"
+        const val EXTRA_DND_ENABLED = "extra_dnd_enabled"
+        private const val CHANNEL_ID = "floating_window_service_channel"
+        private const val NOTIFICATION_ID = 1001
+        
+        // EventChannel相关
+        @Volatile
+        private var eventSink: EventChannel.EventSink? = null
+        
+        fun setEventSink(sink: EventChannel.EventSink?) {
+            eventSink = sink
+        }
+        
+        private fun sendPostureEvent(isSideLying: Boolean, sideLyingSince: Long?) {
+            val sink = eventSink ?: return
+            // EventChannel必须在主线程调用，使用Handler切换到主线程
+            val mainHandler = Handler(Looper.getMainLooper())
+            mainHandler.post {
+                try {
+                    val event = mapOf(
+                        "isSideLying" to isSideLying,
+                        "sideLyingSince" to (sideLyingSince ?: 0)
+                    )
+                    sink.success(event)
+                } catch (e: Exception) {
+                    android.util.Log.e("FloatingWindow", "Error sending posture event: ${e.message}", e)
+                }
+            }
+        }
+        
+        private fun sendStatsEvent(todayRemindCount: Int) {
+            val sink = eventSink ?: return
+            // EventChannel必须在主线程调用，使用Handler切换到主线程
+            val mainHandler = Handler(Looper.getMainLooper())
+            mainHandler.post {
+                try {
+                    val event = mapOf(
+                        "type" to "stats",
+                        "todayRemindCount" to todayRemindCount
+                    )
+                    sink.success(event)
+                } catch (e: Exception) {
+                    android.util.Log.e("FloatingWindow", "Error sending stats event: ${e.message}", e)
+                }
+            }
+        }
+    }
     private var windowManager: WindowManager? = null
     private var floatingView: View? = null
     private var windowParams: WindowManager.LayoutParams? = null
@@ -57,8 +119,52 @@ class FloatingWindowService : Service(), SensorEventListener {
     private var sideCandidateSince: Long? = null
     private var sideLyingSince: Long? = null
     private var isMonitoring = false
+    private var isInForeground = false // 是否在前台（用于调整采样频率）
+    private var lastDebugLogTime: Long = 0L // 节流用的调试日志时间戳
+    
+    // 检测稳定性相关：使用滑动窗口记录最近的检测结果
+    private val sideDetectionWindow = mutableListOf<Boolean>() // 最近N次的检测结果
+    private val detectionWindowSize = 5 // 目前不再依赖计数窗口，保留以便未来扩展
+    private var consecutiveSideCount = 0 // 不再作为主判定依据
+    private var consecutiveNormalCount = 0 // 不再作为主判定依据
+
+    // 使用基于时间的稳定判定，避免前后台采样率差异带来的体验漂移
+    private var lastSampleTimeMs: Long? = null
+    private var sideHoldMs: Long = 0L
+    private var normalHoldMs: Long = 0L
+    
+    // 显示方向相关（用于将重力映射到“屏幕坐标系”，减少横屏误判）
+    private var displayRotation: Int = Surface.ROTATION_0
+    
+    // 自定义姿势相关
+    private data class CustomPostureData(
+        val id: String,
+        val name: String,
+        val avgNx: Double,
+        val avgNy: Double,
+        val avgNz: Double,
+        val rawAx: Double,
+        val rawAy: Double,
+        val rawAz: Double
+    ) {
+        fun calculateSimilarity(nx: Double, ny: Double, nz: Double, ax: Double, ay: Double, az: Double): Double {
+            val normalizedDistance = 
+                (nx - avgNx) * (nx - avgNx) +
+                (ny - avgNy) * (ny - avgNy) +
+                (nz - avgNz) * (nz - avgNz)
+            val rawDistance = 
+                (ax - rawAx) * (ax - rawAx) +
+                (ay - rawAy) * (ay - rawAy) +
+                (az - rawAz) * (az - rawAz)
+            // 更强调重力方向的一致性，将原始加速度权重调低，降低手抖/轻微移动的影响
+            return normalizedDistance * 0.9 + rawDistance * 0.1
+        }
+    }
+    private var useCustomPostures = false
+    private val customPostures = mutableListOf<CustomPostureData>()
     
     // 提醒相关
+    private var reminderThread: HandlerThread? = null
     private var reminderCheckHandler: Handler? = null
     private var reminderCheckRunnable: Runnable? = null
     private var vibrator: Vibrator? = null
@@ -81,6 +187,13 @@ class FloatingWindowService : Service(), SensorEventListener {
     override fun onCreate() {
         super.onCreate()
         windowManager = getSystemService(WINDOW_SERVICE) as WindowManager
+        // 读取当前显示方向，用于后续重力分量重映射
+        try {
+            @Suppress("DEPRECATION")
+            displayRotation = windowManager?.defaultDisplay?.rotation ?: Surface.ROTATION_0
+        } catch (_: Exception) {
+            displayRotation = Surface.ROTATION_0
+        }
         sensorManager = getSystemService(SENSOR_SERVICE) as SensorManager
         accelerometer = sensorManager?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
         
@@ -109,13 +222,18 @@ class FloatingWindowService : Service(), SensorEventListener {
             android.util.Log.e("FloatingWindow", "Failed to register settings receiver: ${e.message}", e)
         }
         
-        // 创建Handler用于定时检查提醒
-        reminderCheckHandler = mainHandler
+        // 创建独立线程用于定时检查提醒，避免阻塞主线程
+        reminderThread = HandlerThread("ReminderCheckThread").apply { start() }
+        reminderCheckHandler = reminderThread?.looper?.let { Handler(it) }
         
         ensureNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        android.util.Log.d(
+            "FloatingWindow",
+            "onStartCommand: action=${intent?.action}, isMonitoring=$isMonitoring"
+        )
         when (intent?.action) {
             ACTION_SHOW -> {
                 loadSettingsFromPrefs()
@@ -132,12 +250,14 @@ class FloatingWindowService : Service(), SensorEventListener {
                 }
             }
             ACTION_HIDE -> {
-                isMonitoring = false
-                stopSensorListening()
-                stopReminderCheck()
+                // 仅隐藏悬浮窗，但保持前台服务与传感器监测继续运行
+                // 这样在 App 前台时依然可以通过 EventChannel 推送姿态状态，
+                // 只是不再在其他应用上显示悬浮窗。
                 hideFloatingWindow()
-                stopForeground(true)
-                stopSelf()
+                android.util.Log.d(
+                    "FloatingWindow",
+                    "ACTION_HIDE: only hiding floating window, isMonitoring=$isMonitoring"
+                )
             }
             ACTION_UPDATE_STATE -> {
                 loadSettingsFromPrefs()
@@ -210,7 +330,13 @@ class FloatingWindowService : Service(), SensorEventListener {
     private fun startSensorListening() {
         accelerometer?.let {
             acquireWakeLock()
-            sensorManager?.registerListener(this, it, SensorManager.SENSOR_DELAY_NORMAL)
+            // 根据前后台调整采样频率：前台使用NORMAL（约50Hz），后台使用UI（约15Hz）以节省电量
+            val delay = if (isInForeground) {
+                SensorManager.SENSOR_DELAY_NORMAL
+            } else {
+                SensorManager.SENSOR_DELAY_UI
+            }
+            sensorManager?.registerListener(this, it, delay)
         }
     }
 
@@ -219,13 +345,47 @@ class FloatingWindowService : Service(), SensorEventListener {
         wakeLock?.let {
             it.setReferenceCounted(false)
             if (!it.isHeld) {
-                it.acquire()
+                // 使用10分钟超时，避免长时间持有
+                it.acquire(10 * 60 * 1000L)
+                // 启动续期机制
+                startWakeLockRenewal()
             }
         }
+    }
+    
+    // WakeLock续期机制：每5分钟续期一次
+    private var wakeLockRenewalHandler: Handler? = null
+    private var wakeLockRenewalRunnable: Runnable? = null
+    
+    private fun startWakeLockRenewal() {
+        wakeLockRenewalHandler = Handler(Looper.getMainLooper())
+        wakeLockRenewalRunnable = object : Runnable {
+            override fun run() {
+                wakeLock?.let {
+                    if (it.isHeld && isMonitoring) {
+                        // 续期10分钟
+                        it.acquire(10 * 60 * 1000L)
+                        android.util.Log.d("FloatingWindow", "WakeLock renewed")
+                        // 5分钟后再次续期
+                        wakeLockRenewalHandler?.postDelayed(this, 5 * 60 * 1000L)
+                    }
+                }
+            }
+        }
+        // 5分钟后开始第一次续期
+        wakeLockRenewalHandler?.postDelayed(wakeLockRenewalRunnable!!, 5 * 60 * 1000L)
+    }
+    
+    private fun stopWakeLockRenewal() {
+        wakeLockRenewalRunnable?.let {
+            wakeLockRenewalHandler?.removeCallbacks(it)
+        }
+        wakeLockRenewalRunnable = null
     }
 
     private fun stopSensorListening() {
         sensorManager?.unregisterListener(this)
+        stopWakeLockRenewal()
         wakeLock?.let {
             if (it.isHeld) {
                 it.release()
@@ -233,6 +393,40 @@ class FloatingWindowService : Service(), SensorEventListener {
         }
     }
     
+    // 判断当前是否可以认为“用户在使用手机”（用于场景门控，减少误判）
+    private fun isUserInteracting(): Boolean {
+        return try {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            val screenOn = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.KITKAT_WATCH) {
+                pm.isInteractive
+            } else {
+                @Suppress("DEPRECATION")
+                pm.isScreenOn
+            }
+            // 这里我们只用“屏幕亮且设备解锁”作为较弱的使用信号
+            val keyguardManager = getSystemService(Context.KEYGUARD_SERVICE) as android.app.KeyguardManager
+            val unlocked = !keyguardManager.isKeyguardLocked
+            screenOn && unlocked
+        } catch (e: Exception) {
+            // 任何异常都不阻塞检测，默认为正在使用
+            true
+        }
+    }
+
+    /**
+     * 将重力在设备坐标系下的 (nx, ny) 分量，根据当前显示旋转角度
+     * 重映射到“屏幕坐标系”的左右(X) / 上下(Y)，以减少横屏时的误判。
+     */
+    private fun remapGravityToScreen(nx: Double, ny: Double): Pair<Double, Double> {
+        return when (displayRotation) {
+            Surface.ROTATION_0 -> Pair(nx, ny)
+            Surface.ROTATION_90 -> Pair(-ny, nx)
+            Surface.ROTATION_180 -> Pair(-nx, -ny)
+            Surface.ROTATION_270 -> Pair(ny, -nx)
+            else -> Pair(nx, ny)
+        }
+    }
+
     override fun onSensorChanged(event: SensorEvent?) {
         try {
             if (event?.sensor?.type != Sensor.TYPE_ACCELEROMETER || !isMonitoring) return
@@ -254,15 +448,49 @@ class FloatingWindowService : Service(), SensorEventListener {
             avgNy = alpha * ny + (1 - alpha) * avgNy
             avgNz = alpha * nz + (1 - alpha) * avgNz
             
-            // 检测姿势变化
+            // 场景门控：仅在认为“用户正在使用手机”时才进入姿势判定
+            if (!isUserInteracting()) {
+                // 如果之前处于侧躺状态，这里直接视为恢复正常
+                if (isSideLying) {
+                    isSideLying = false
+                    sideLyingSince = null
+                    sideCandidateSince = null
+                    sideDetectionWindow.clear()
+                    consecutiveSideCount = 0
+                    consecutiveNormalCount = 0
+                    sideHoldMs = 0L
+                    normalHoldMs = 0L
+                    mainHandler.post {
+                        updateFloatingWindowState(false)
+                    }
+                    Companion.sendPostureEvent(false, null)
+                } else {
+                    // 清空候选计时，避免误触发
+                    sideCandidateSince = null
+                    sideDetectionWindow.clear()
+                    consecutiveSideCount = 0
+                    consecutiveNormalCount = 0
+                    sideHoldMs = 0L
+                    normalHoldMs = 0L
+                }
+                return
+            }
+
+            // 检测姿势变化（使用更宽松的阈值，避免误判）
             var deltaG = 0.0
             if (lastG != null) {
                 deltaG = abs(g - lastG!!)
             }
             lastG = g
             
-            if (deltaG > 0.8) {
+            // 只有在重力变化非常大时才重置（提高阈值，减少误判）
+            // 0.8 -> 2.0，只有在剧烈运动时才重置
+            if (deltaG > 2.0) {
+                android.util.Log.d("FloatingWindow", "Large movement detected (deltaG=$deltaG), resetting detection")
                 sideCandidateSince = null
+                consecutiveSideCount = 0
+                consecutiveNormalCount = 0
+                sideDetectionWindow.clear()
                 if (isSideLying) {
                     isSideLying = false
                     sideLyingSince = null
@@ -270,48 +498,86 @@ class FloatingWindowService : Service(), SensorEventListener {
                     mainHandler.post {
                         updateFloatingWindowState(false)
                     }
+                    Companion.sendPostureEvent(false, null)
                 }
                 return
             }
             
-            // 判断是否侧躺
-            val isScreenRoughlyVertical = abs(avgNz) < 0.8
-            val isGravityMostlySide = abs(avgNx) > 0.4 || abs(avgNy) > 0.4
-            val isSideByDirection = isScreenRoughlyVertical && isGravityMostlySide
-            val isSideByRaw = abs(ax) > 6.5 && abs(az) < 5.0
-            val isSide = isSideByDirection || isSideByRaw
+            // 计算“竖直程度”：屏幕法线与重力方向之间的夹角（越大越竖直）
+            val absNz = abs(avgNz)
+            // tiltDeg = acos(|nz|)；这里直接用阈值对应的 cos 值，避免反三角运算
+            val isUpright = absNz <= 0.766  // ≈ cos(40°)，代表屏幕与重力夹角在 40°~90° 之间
+
+            // 将重力在设备坐标系下的 (avgNx, avgNy) 分量重映射到屏幕坐标系
+            // 以减少横屏状态下的误判
+            val (screenNx, screenNy) = remapGravityToScreen(avgNx, avgNy)
+            val ratio = abs(screenNx) / (abs(screenNy) + 1e-3) // X/Y 比值，越大越接近“侧边朝下”
+
+            // 使用自定义姿势时，仍然优先走自定义匹配
+            val isSideCandidate = if (useCustomPostures && customPostures.isNotEmpty()) {
+                // 使用自定义姿势检测
+                val match = customPostures.minByOrNull { posture ->
+                    posture.calculateSimilarity(avgNx, avgNy, avgNz, ax, ay, az)
+                }
+                // 如果相似度低于阈值（0.5），认为是匹配的姿势
+                match?.let { it.calculateSimilarity(avgNx, avgNy, avgNz, ax, ay, az) < 0.5 } ?: false
+            } else {
+                // 使用默认系统算法：基于“屏幕够竖直 + 侧边朝下”的组合判断高风险侧躺姿势
+                // 进入条件：屏幕相对竖直 + X/Y 比值较大（≈ roll 接近 ±90°）
+                isUpright && ratio > 1.8
+            }
             
             val now = System.currentTimeMillis()
-            
-            if (isSide) {
-                sideCandidateSince = sideCandidateSince ?: now
-                val stableDuration = (now - sideCandidateSince!!) / 1000
-                val stableThresholdSeconds = 2
-                
-                if (!isSideLying && stableDuration >= stableThresholdSeconds) {
-                    isSideLying = true
-                    sideLyingSince = now
-                    android.util.Log.d("FloatingWindow", "Side lying detected, updating UI")
-                    // 切换到主线程更新UI
-                    mainHandler.post {
-                        // 确保悬浮窗存在
-                        if (floatingView == null && isMonitoring) {
-                            android.util.Log.w("FloatingWindow", "floatingView is null, recreating...")
-                            showFloatingWindow()
-                        }
-                        updateFloatingWindowState(true)
-                    }
-                }
+
+            // 基于时间的稳定判定：按事件间隔累计“风险姿势停留时间”和“正常姿势时间”
+            val dtMs = lastSampleTimeMs?.let { (now - it).coerceIn(0L, 500L) } ?: 0L
+            lastSampleTimeMs = now
+
+            if (isSideCandidate) {
+                sideHoldMs += dtMs
+                normalHoldMs = 0L
             } else {
-                sideCandidateSince = null
-                if (isSideLying) {
-                    isSideLying = false
-                    sideLyingSince = null
-                    // 切换到主线程更新UI
-                    mainHandler.post {
-                        updateFloatingWindowState(false)
+                normalHoldMs += dtMs
+                sideHoldMs = 0L
+            }
+
+            // 进入/退出稳定阈值（毫秒）
+            val enterHoldMs = 1000L  // 大约 1 秒持续风险姿势才认为开始侧躺
+            val exitHoldMs = 1500L   // 大约 1.5 秒持续正常姿势才认为退出侧躺
+
+            if (!isSideLying && sideHoldMs >= enterHoldMs) {
+                // 确认进入侧躺
+                isSideLying = true
+                sideLyingSince = now
+                sideCandidateSince = now
+                android.util.Log.d("FloatingWindow", "Side lying confirmed (hold=${sideHoldMs}ms), updating UI")
+                // 通过EventChannel推送状态到Flutter
+                Companion.sendPostureEvent(true, sideLyingSince)
+                // 切换到主线程更新UI
+                mainHandler.post {
+                    // 确保悬浮窗存在
+                    if (floatingView == null && isMonitoring) {
+                        android.util.Log.w("FloatingWindow", "floatingView is null, recreating...")
+                        showFloatingWindow()
                     }
+                    updateFloatingWindowState(true)
                 }
+                // 防止溢出，进入后将累计时间截断到阈值
+                sideHoldMs = enterHoldMs
+            } else if (isSideLying && normalHoldMs >= exitHoldMs) {
+                // 确认恢复正常姿势
+                android.util.Log.d("FloatingWindow", "Normal posture confirmed (hold=${normalHoldMs}ms), resetting side lying state")
+                sideCandidateSince = null
+                isSideLying = false
+                sideLyingSince = null
+                // 通过EventChannel推送状态到Flutter
+                Companion.sendPostureEvent(false, null)
+                // 切换到主线程更新UI
+                mainHandler.post {
+                    updateFloatingWindowState(false)
+                }
+                // 防止溢出，退出后将累计时间截断到阈值
+                normalHoldMs = exitHoldMs
             }
         } catch (e: Exception) {
             e.printStackTrace()
@@ -383,7 +649,7 @@ class FloatingWindowService : Service(), SensorEventListener {
             // 重置计时起点，保证后续还能按周期继续提醒
             sideLyingSince = now
 
-            // 震动提醒：尊重设置开关
+            // 震动提醒：尊重设置开关（在子线程执行，震动操作是线程安全的）
             if (vibrationEnabled) {
                 try {
                     val hasVibrator = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
@@ -413,11 +679,13 @@ class FloatingWindowService : Service(), SensorEventListener {
                 android.util.Log.d("FloatingWindow", "Vibration disabled, skip haptics")
             }
 
-            // 更新统计（写入 SharedPreferences，供 Flutter 端读取）
+            // 更新统计（写入 SharedPreferences，在子线程执行，使用 apply() 异步写入）
             updateReminderCount()
 
-            // 发送通知
-            showReminderNotification()
+            // 发送通知（需要切回主线程，因为 NotificationManager 可能需要在主线程操作）
+            mainHandler.post {
+                showReminderNotification()
+            }
         } catch (e: Exception) {
             e.printStackTrace()
             // 捕获异常，防止服务崩溃
@@ -437,6 +705,39 @@ class FloatingWindowService : Service(), SensorEventListener {
         }
         if (intent.hasExtra(EXTRA_DND_ENABLED)) {
             dndEnabled = intent.getBooleanExtra(EXTRA_DND_ENABLED, dndEnabled)
+        }
+        
+        // 更新自定义姿势数据
+        if (intent.hasExtra("use_custom_postures")) {
+            useCustomPostures = intent.getBooleanExtra("use_custom_postures", false)
+            android.util.Log.d("FloatingWindow", "Use custom postures: $useCustomPostures")
+        }
+        if (intent.hasExtra("custom_postures_json")) {
+            val posturesJson = intent.getStringExtra("custom_postures_json")
+            if (posturesJson != null) {
+                try {
+                    customPostures.clear()
+                    val jsonArray = org.json.JSONArray(posturesJson)
+                    for (i in 0 until jsonArray.length()) {
+                        val postureObj = jsonArray.getJSONObject(i)
+                        customPostures.add(
+                            CustomPostureData(
+                                id = postureObj.getString("id"),
+                                name = postureObj.getString("name"),
+                                avgNx = postureObj.getDouble("avgNx"),
+                                avgNy = postureObj.getDouble("avgNy"),
+                                avgNz = postureObj.getDouble("avgNz"),
+                                rawAx = postureObj.getDouble("rawAx"),
+                                rawAy = postureObj.getDouble("rawAy"),
+                                rawAz = postureObj.getDouble("rawAz")
+                            )
+                        )
+                    }
+                    android.util.Log.d("FloatingWindow", "Loaded ${customPostures.size} custom postures")
+                } catch (e: Exception) {
+                    android.util.Log.e("FloatingWindow", "Failed to parse custom postures: ${e.message}", e)
+                }
+            }
         }
         if (intent.hasExtra(EXTRA_THRESHOLD_SECONDS)) {
             thresholdSecondsCache = intent
@@ -540,20 +841,18 @@ class FloatingWindowService : Service(), SensorEventListener {
                 0
             }
 
-            android.util.Log.d(
-                "FloatingWindow",
-                "Current stored reminder prefs: date=$storedDate, count=$count, todayKey=$todayKey"
-            )
-            
             val newCount = count + 1
-            android.util.Log.d("FloatingWindow", "Updating reminder count: $count -> $newCount (date: $todayKey)")
             
+            // 通过EventChannel推送统计数据到Flutter
+            Companion.sendStatsEvent(newCount)
+            
+            // 使用 apply() 异步写入，避免阻塞当前线程（已在子线程中）
             prefs.edit()
                 .putString("flutter.today_date", todayKey)
                 .putInt("flutter.today_remind_count", newCount)
-                .apply()
+                .apply() // apply() 是异步的，不会阻塞
             
-            android.util.Log.d("FloatingWindow", "Reminder count updated successfully")
+            android.util.Log.d("FloatingWindow", "Reminder count updated: $newCount (date: $todayKey)")
         } catch (e: Exception) {
             android.util.Log.e("FloatingWindow", "Error updating reminder count: ${e.message}", e)
             e.printStackTrace()
@@ -629,7 +928,8 @@ class FloatingWindowService : Service(), SensorEventListener {
             WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         ).apply {
-            gravity = Gravity.TOP or Gravity.START
+            // 默认位置改为右上角
+            gravity = Gravity.TOP or Gravity.END
             x = 0
             y = 200
         }
@@ -745,31 +1045,19 @@ class FloatingWindowService : Service(), SensorEventListener {
 
             try {
                 if (sideLying) {
-                    // 侧躺状态：紫色，睡眠图标
-                    android.util.Log.d("FloatingWindow", "Updating to side lying state (purple)")
-                    floatingButton.setImageResource(android.R.drawable.ic_menu_revert)
-                    floatingButton.setColorFilter(
-                        ContextCompat.getColor(this, android.R.color.holo_purple),
-                        android.graphics.PorterDuff.Mode.SRC_IN
-                    )
+                    android.util.Log.d("FloatingWindow", "Updating to side lying state (icon)")
+                    floatingButton.setImageResource(R.drawable.ic_monitor_alert)
                     floatingText.text = "侧躺中"
                     floatingText.setTextColor(
                         ContextCompat.getColor(this, android.R.color.holo_purple)
                     )
-                    android.util.Log.d("FloatingWindow", "Successfully updated to side lying state")
                 } else {
-                    // 正常状态：绿色，星星图标
-                    android.util.Log.d("FloatingWindow", "Updating to normal state (green)")
-                    floatingButton.setImageResource(android.R.drawable.btn_star_big_on)
-                    floatingButton.setColorFilter(
-                        ContextCompat.getColor(this, android.R.color.holo_green_dark),
-                        android.graphics.PorterDuff.Mode.SRC_IN
-                    )
+                    android.util.Log.d("FloatingWindow", "Updating to normal state (icon)")
+                    floatingButton.setImageResource(R.drawable.ic_monitor_normal)
                     floatingText.text = "监测中"
                     floatingText.setTextColor(
                         ContextCompat.getColor(this, android.R.color.holo_green_dark)
                     )
-                    android.util.Log.d("FloatingWindow", "Successfully updated to normal state")
                 }
             } catch (e: Exception) {
                 android.util.Log.e("FloatingWindow", "Error updating UI: ${e.message}", e)
@@ -794,35 +1082,28 @@ class FloatingWindowService : Service(), SensorEventListener {
 
     override fun onDestroy() {
         super.onDestroy()
-        stopSensorListening()
-        stopReminderCheck()
-        hideFloatingWindow()
         try {
-            unregisterReceiver(settingsReceiver)
-        } catch (e: Exception) {
-            android.util.Log.w("FloatingWindow", "Receiver already unregistered: ${e.message}")
-        }
-        wakeLock?.let {
-            if (it.isHeld) {
-                it.release()
+            stopSensorListening()
+            stopReminderCheck()
+            reminderThread?.quitSafely()
+            reminderThread = null
+            hideFloatingWindow()
+            try {
+                unregisterReceiver(settingsReceiver)
+            } catch (e: Exception) {
+                android.util.Log.w("FloatingWindow", "Receiver already unregistered: ${e.message}")
             }
+            wakeLock?.let {
+                if (it.isHeld) {
+                    it.release()
+                }
+            }
+            // 清理EventChannel
+            Companion.setEventSink(null)
+        } catch (e: Exception) {
+            android.util.Log.e("FloatingWindow", "Error in onDestroy: ${e.message}", e)
         }
     }
 
-    companion object {
-        const val ACTION_SHOW = "com.example.flutter_application_1.SHOW_FLOATING_WINDOW"
-        const val ACTION_HIDE = "com.example.flutter_application_1.HIDE_FLOATING_WINDOW"
-        const val ACTION_UPDATE_STATE = "com.example.flutter_application_1.UPDATE_STATE"
-        const val ACTION_SETTINGS_UPDATED = "com.example.flutter_application_1.SETTINGS_UPDATED"
-        const val EXTRA_IS_SIDE_LYING = "is_side_lying"
-        const val EXTRA_MONITORING = "extra_monitoring"
-        const val EXTRA_VIBRATION_ENABLED = "extra_vibration_enabled"
-        const val EXTRA_THRESHOLD_SECONDS = "extra_threshold_seconds"
-        const val EXTRA_DND_START_MINUTES = "extra_dnd_start_minutes"
-        const val EXTRA_DND_END_MINUTES = "extra_dnd_end_minutes"
-        const val EXTRA_DND_ENABLED = "extra_dnd_enabled"
-        private const val CHANNEL_ID = "floating_window_service_channel"
-        private const val NOTIFICATION_ID = 1001
-    }
 }
 

@@ -1,11 +1,11 @@
-import 'dart:ui';
+﻿import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import '../widgets/glass_card.dart';
 
-/// 首页：核心监测控制 + 今日提醒次数
+/// 首页：核心监测控�?+ 今日提醒次数
 class HomePage extends StatelessWidget {
   const HomePage({
     super.key,
@@ -33,8 +33,8 @@ class HomePage extends StatelessWidget {
         statusBarColor: Colors.transparent, // 透明状态栏
         statusBarIconBrightness: Brightness.light, // 浅色图标（白色）
         statusBarBrightness: Brightness.dark, // iOS 状态栏样式
-        systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜色
-        systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜色
+        systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜�?
+        systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜�?
       ),
       child: Container(
         decoration: const BoxDecoration(
@@ -62,7 +62,7 @@ class HomePage extends StatelessWidget {
                 ),
                 const SizedBox(height: 40),
 
-                // 中间大按钮区域
+                // 中间大按钮区�?
                 Expanded(
                   child: Center(
                     child: _BreathingButton(
@@ -89,7 +89,7 @@ class HomePage extends StatelessWidget {
                               Container(
                                 padding: const EdgeInsets.all(8),
                                 decoration: BoxDecoration(
-                                  color: primary.withValues(alpha: 0.2),
+                                  color: primary.withOpacity(0.2),
                                   borderRadius: BorderRadius.circular(10),
                                 ),
                                 child: Icon(
@@ -125,10 +125,10 @@ class HomePage extends StatelessWidget {
                           Container(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             decoration: BoxDecoration(
-                              color: Colors.white.withValues(alpha: 0.1),
+                              color: Colors.white.withOpacity(0.6),
                               borderRadius: BorderRadius.circular(12),
                               border: Border.all(
-                                color: Colors.white.withValues(alpha: 0.2),
+                                color: Colors.white.withOpacity(0.6),
                               ),
                             ),
                             child: Column(
@@ -143,7 +143,7 @@ class HomePage extends StatelessWidget {
                                 ),
                                 const SizedBox(height: 2),
                                 Text(
-                                  '≥ $thresholdSeconds 秒',
+                                  '超过 $thresholdSeconds 秒',
                                   style: theme.textTheme.bodyMedium?.copyWith(
                                     color: Colors.white,
                                     fontWeight: FontWeight.w600,
@@ -172,8 +172,8 @@ class HomePage extends StatelessWidget {
                           decoration: BoxDecoration(
                             gradient: LinearGradient(
                               colors: [
-                                const Color(0xFFB5179E).withValues(alpha: 0.3),
-                                const Color(0xFFB5179E).withValues(alpha: 0.1),
+                                const Color(0xFFB5179E).withOpacity(0.3),
+                                const Color(0xFFB5179E).withOpacity(0.3),
                               ],
                             ),
                             borderRadius: BorderRadius.circular(12),
@@ -284,7 +284,10 @@ class _BreathingButtonState extends State<_BreathingButton>
       builder: (context, child) {
         final scale = isActive ? _controller.value : 1.0;
         return GestureDetector(
-          onTap: widget.onTap,
+          onTap: () {
+            debugPrint('[HomePage] Button tapped!');
+            widget.onTap();
+          },
           child: Transform.scale(
             scale: scale,
             child: Container(
@@ -294,7 +297,7 @@ class _BreathingButtonState extends State<_BreathingButton>
                 shape: BoxShape.circle,
                 gradient: RadialGradient(
                   colors: isActive
-                      ? [widget.haloColor.withValues(alpha: 0.35), Colors.transparent]
+                      ? [widget.haloColor.withOpacity(0.35), Colors.transparent]
                       : [Colors.transparent, Colors.transparent],
                   radius: 0.9,
                 ),
@@ -309,26 +312,26 @@ class _BreathingButtonState extends State<_BreathingButton>
                     shape: BoxShape.circle,
                     gradient: LinearGradient(
                       colors: isActive
-                          ? [widget.haloColor, widget.haloColor.withValues(alpha: 0.9)]
-                          : [Colors.white.withValues(alpha: 0.12), Colors.white10],
+                          ? [widget.haloColor, widget.haloColor.withOpacity(0.35)]
+                          : [Colors.white.withOpacity(0.6), Colors.white10],
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
                     ),
                     boxShadow: [
                       if (isActive)
                         BoxShadow(
-                          color: widget.haloColor.withValues(alpha: 0.55),
+                          color: widget.haloColor.withOpacity(0.35),
                           blurRadius: 35,
                           spreadRadius: 6,
                         ),
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: 0.7),
+                        color: Colors.black.withOpacity(0.45),
                         blurRadius: 24,
                         offset: const Offset(0, 18),
                       ),
                     ],
                     border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.22),
+                      color: Colors.white.withOpacity(0.6),
                       width: 1.5,
                     ),
                   ),
@@ -386,8 +389,8 @@ class ReminderDialog extends StatelessWidget {
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                  Colors.white.withValues(alpha: 0.9),
-                  Colors.white.withValues(alpha: 0.85),
+                  Colors.white.withOpacity(0.6),
+                  Colors.white.withOpacity(0.6),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,

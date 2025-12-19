@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">flutter_application_1</string>
+    <string name="floating_icon_desc">姿势监测悬浮窗</string>
+</resources>
+

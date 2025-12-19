@@ -3,6 +3,8 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:flutter_application_1/services/error_handler.dart';
+import 'package:flutter_application_1/utils/logger.dart';
 
 /// 统一管理 SharedPreferences，避免高频重复读取并提供内存缓存
 class SettingsRepository extends ChangeNotifier {
@@ -22,6 +24,7 @@ class SettingsRepository extends ChangeNotifier {
   bool _dndEnabled = false;
   DateTime _today = _normalizeDate(DateTime.now());
   int _todayRemindCount = 0;
+  bool _useCustomPostures = false;
 
   bool get monitoring => _monitoring;
   bool get vibrationEnabled => _vibrationEnabled;
@@ -31,6 +34,7 @@ class SettingsRepository extends ChangeNotifier {
   bool get dndEnabled => _dndEnabled;
   DateTime get today => _today;
   int get todayRemindCount => _todayRemindCount;
+  bool get useCustomPostures => _useCustomPostures;
 
   Future<void> init() async {
     if (_initialized) return;
@@ -107,6 +111,15 @@ class SettingsRepository extends ChangeNotifier {
     _scheduleNativeSync();
   }
 
+  Future<void> setUseCustomPostures(bool value) async {
+    await _ensureReady();
+    if (_useCustomPostures == value) return;
+    _useCustomPostures = value;
+    await _prefs!.setBool('use_custom_postures', value);
+    notifyListeners();
+    _scheduleNativeSync();
+  }
+
   Future<void> resetTodayIfNeeded(DateTime now) async {
     await _ensureReady();
     final normalized = _normalizeDate(now);
@@ -144,6 +157,7 @@ class SettingsRepository extends ChangeNotifier {
     _dndStartMinutes = _prefs!.getInt('dnd_start_minutes') ?? 23 * 60;
     _dndEndMinutes = _prefs!.getInt('dnd_end_minutes') ?? 7 * 60;
     _dndEnabled = _prefs!.getBool('dnd_enabled') ?? false;
+    _useCustomPostures = _prefs!.getBool('use_custom_postures') ?? false;
 
     final now = DateTime.now();
     final todayKey = _formatDate(now);
@@ -208,13 +222,12 @@ class SettingsRepository extends ChangeNotifier {
       'dndStartMinutes': _dndStartMinutes,
       'dndEndMinutes': _dndEndMinutes,
       'dndEnabled': _dndEnabled,
+      'useCustomPostures': _useCustomPostures,
     };
     try {
       await _channel.invokeMethod('syncSettings', payload);
-    } catch (e) {
-      if (kDebugMode) {
-        debugPrint('Failed to sync settings to native layer: $e');
-      }
+    } catch (e, stackTrace) {
+      ErrorHandler.handleError(e, stackTrace, userMessage: '同步设置到原生层失败');
     }
   }
 }

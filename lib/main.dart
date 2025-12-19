@@ -1,40 +1,35 @@
-import 'dart:async';
+﻿import 'dart:async';
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
+import 'package:flutter_application_1/controllers/lifecycle_coordinator.dart';
+import 'package:flutter_application_1/controllers/reminder_controller.dart';
 import 'package:flutter_application_1/pages/home_page.dart';
 import 'package:flutter_application_1/pages/settings_page.dart';
-import 'package:flutter_application_1/services/floating_window_manager.dart';
+import 'package:flutter_application_1/services/error_handler.dart';
+import 'package:flutter_application_1/services/native_posture_stream.dart';
 import 'package:flutter_application_1/services/permission_coordinator.dart';
 import 'package:flutter_application_1/services/posture_monitor.dart';
 import 'package:flutter_application_1/services/settings_repository.dart';
-import 'package:sensors_plus/sensors_plus.dart';
-import 'package:vibration/vibration.dart';
-
-const AndroidNotificationChannel _reminderNotificationChannel =
-    AndroidNotificationChannel(
-  'posture_guardian_channel',
-  '侧躺监测提醒',
-  description: '当你侧躺玩手机时，会收到健康提醒',
-  importance: Importance.high,
-  playSound: true,
-);
+import 'package:flutter_application_1/services/custom_posture_repository.dart';
+import 'package:flutter_application_1/services/floating_window_manager.dart';
+import 'package:flutter_application_1/utils/logger.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const PostureGuardianApp());
 }
 
-/// 应用主入口，配置全局暗色玻璃拟态风格
+/// 应用主入口，配置全局暗色玻璃拟态风�?
 class PostureGuardianApp extends StatelessWidget {
   const PostureGuardianApp({super.key});
 
   @override
   Widget build(BuildContext context) {
     const primaryColor = Color(0xFF4361EE); // 靛青
-    const background = Color(0xFF1B1B1E); // 深枪黑
+    const background = Color(0xFF1B1B1E); // 深枪�?
 
     final colorScheme = ColorScheme.fromSeed(
       seedColor: primaryColor,
@@ -54,17 +49,17 @@ class PostureGuardianApp extends StatelessWidget {
         fontFamily: 'Roboto',
       ),
       builder: (context, child) {
-        // 配置状态栏样式，使其与首页背景一致
+        // 配置状态栏样式，使其与首页背景一�?
         // 同时确保背景色立即显示，避免空白页面
         return Container(
-          color: background, // 立即显示背景色
+          color: background, // 立即显示背景�?
           child: AnnotatedRegion<SystemUiOverlayStyle>(
             value: const SystemUiOverlayStyle(
               statusBarColor: Colors.transparent, // 透明状态栏
               statusBarIconBrightness: Brightness.light, // 浅色图标（白色）
               statusBarBrightness: Brightness.dark, // iOS 状态栏样式
-              systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜色
-              systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜色
+              systemNavigationBarColor: Color(0xFF1B1B1E), // 导航栏颜�?
+              systemNavigationBarIconBrightness: Brightness.light, // 导航栏图标颜�?
             ),
             child: child!,
           ),
@@ -92,10 +87,10 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   bool _settingsReady = false;
   final PermissionCoordinator _permissionCoordinator = PermissionCoordinator();
 
-  // 设置与状态
+  // 设置与状�?
   bool _monitoring = false;
   bool _vibrationEnabled = true;
-  int _thresholdSeconds = 5; // 默认从 5 秒开始更适合 MVP 体验
+  int _thresholdSeconds = 5; // 默认�?5 秒开始更适合 MVP 体验
   TimeOfDay _dndStart = const TimeOfDay(hour: 23, minute: 0);
   TimeOfDay _dndEnd = const TimeOfDay(hour: 7, minute: 0);
   bool _dndEnabled = false;
@@ -104,35 +99,105 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
   int _todayRemindCount = 0;
   DateTime _today = DateTime.now();
 
-  // 传感器 & 姿态检测
-  late final PostureMonitor _postureMonitor =
-      PostureMonitor(sensorStream: accelerometerEventStream());
+  // 姿态检测：统一使用原生服务
+  final NativePostureStream _nativePostureStream = NativePostureStream.instance;
   StreamSubscription<PostureState>? _postureSubscription;
+  StreamSubscription<int>? _statsSubscription;
   bool _isSideLying = false;
-  // 最近一次确认“稳定侧躺”起始时间（用于健康提醒计时）
+  // 最近一次确�?稳定侧躺"起始时间（用于健康提醒计时）
   DateTime? _sideLyingSince;
+  // 前台提醒检查定时器（仅用于在前台根据服务提供的 sideLyingSince 弹出对话框）
   Timer? _checkTimer;
-
-  static const List<int> _reminderVibrationPattern = [0, 120, 60, 120];
 
   // 通知服务
   final FlutterLocalNotificationsPlugin _notifications =
       FlutterLocalNotificationsPlugin();
-  bool _isInBackground = false;
-  // 提醒弹窗状态：是否正在显示
-  bool _isReminderDialogShowing = false;
-  
-  // 悬浮窗相关（使用原生悬浮窗）
-  bool _isFloatingWindowVisible = false;
+
+  // 自定义姿势
+  final CustomPostureRepository _customPostureRepository =
+      CustomPostureRepository.instance;
+
+  // 控制�?
+  late final ReminderController _reminderController;
+  late final LifecycleCoordinator _lifecycleCoordinator;
+  bool _nativeMonitoringEnsured = false; // 确保原生服务已启动
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _settingsListener = _handleSettingsChanged;
-    _initializeNotifications();
     unawaited(_permissionCoordinator.init());
-    _initSettings();
+    _initializeControllersAndSettings();
+  }
+  
+  /// 初始化控制器和设置（确保顺序）
+  Future<void> _initializeControllersAndSettings() async {
+    try {
+      await _initializeControllers();
+      await _initSettings();
+      AppLogger.d('RootShell', 'Initialization complete');
+    } catch (e, stackTrace) {
+      AppLogger.e('RootShell', 'Initialization failed', e, stackTrace);
+      ErrorHandler.handleError(e, stackTrace, userMessage: '应用初始化失败');
+    }
+  }
+
+  Future<void> _initializeControllers() async {
+    await _initializeNotifications();
+    
+    // 初始化自定义姿势仓库
+    try {
+      await CustomPostureRepository.instance.init();
+    } catch (e, stackTrace) {
+      AppLogger.e('RootShell', 'Failed to init custom posture repository', e, stackTrace);
+      // 继续初始化，不阻塞
+    }
+    
+    // 初始化提醒控制器
+    _reminderController = ReminderController(
+      notifications: _notifications,
+      ensureNotificationChannel: _ensureNotificationChannel,
+    );
+    
+    // 初始化生命周期协调器（不再需要PostureMonitor，统一使用原生服务�?
+    _lifecycleCoordinator = LifecycleCoordinator(
+      settingsRepository: _settingsRepo,
+      onForegroundResumed: () {
+        // 回到前台时的回调
+        if (mounted) {
+          setState(() {
+            // 触发UI更新
+          });
+        }
+      },
+    );
+    
+    // 开始监听原生服务推送的姿态状�?
+    _nativePostureStream.startListening();
+    _postureSubscription = _nativePostureStream.stateStream.listen(
+      _handlePostureState,
+      onError: (error, stackTrace) {
+        AppLogger.e('RootShell', '姿态检测服务异常', error, stackTrace);
+        ErrorHandler.handleError(error, stackTrace, userMessage: '姿态检测服务异常');
+      },
+    );
+    
+    // 监听统计数据更新（原生服务推送的统计数据
+    _statsSubscription = _nativePostureStream.statsStream.listen(
+      (count) {
+        if (mounted) {
+          setState(() {
+            _todayRemindCount = count;
+          });
+          // 统计数据仅用于展示，不再在这里触发前台弹窗
+        }
+      },
+      onError: (error, stackTrace) {
+        AppLogger.e('RootShell', '统计数据流错误', error, stackTrace);
+        ErrorHandler.handleError(error, stackTrace);
+      },
+    );
   }
   
   Future<void> _initializeNotifications() async {
@@ -146,27 +211,77 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     await _notifications.initialize(
       initSettings,
       onDidReceiveNotificationResponse: (details) {
-        // 用户点击通知时的处理（可以打开 App）
+        // 用户点击通知时的处理（可以打开 App
       },
     );
 
+    // 确保通知渠道在所有场景下都正确注
+    await _ensureNotificationChannel();
+  }
+
+  /// 确保通知渠道已注册（可在多个地方调用，确保不会重复创建）
+  /// 使用统一的渠道ID常量，避免不一
+  static const String _notificationChannelId = 'posture_guardian_channel';
+  static const String _notificationChannelName = '侧躺监测提醒';
+  static const String _notificationChannelDescription = '当你侧躺玩手机时，会收到健康提醒';
+  
+  // 缓存通知渠道检查结果，避免重复查询
+  static bool? _notificationChannelChecked;
+  
+  Future<void> _ensureNotificationChannel() async {
+    // 如果已经检查过且存在，直接返回（避免重复查询）
+    if (_notificationChannelChecked == true) return;
+    
     final androidNotifications = _notifications
         .resolvePlatformSpecificImplementation<
             AndroidFlutterLocalNotificationsPlugin>();
 
     if (androidNotifications != null) {
-      // 确保后台提醒所需的通知渠道已注册（Android 8.0+ 必须调用）
-      await androidNotifications
-          .createNotificationChannel(_reminderNotificationChannel);
-      // Android 13+ 动态通知权限
-      await androidNotifications.requestNotificationsPermission();
+      try {
+        // 检查渠道是否已存在，避免重复创
+        final existingChannels = await androidNotifications.getNotificationChannels();
+        final channelExists = existingChannels?.any(
+          (channel) => channel.id == _notificationChannelId,
+        ) ?? false;
+        
+        if (!channelExists) {
+          // 确保后台提醒所需的通知渠道已注册（Android 8.0+ 必须调用
+          const channel = AndroidNotificationChannel(
+            _notificationChannelId,
+            _notificationChannelName,
+            description: _notificationChannelDescription,
+            importance: Importance.high,
+            playSound: true,
+          );
+          await androidNotifications.createNotificationChannel(channel);
+          AppLogger.d('RootShell', '通知渠道已创建 $_notificationChannelId');
+        } else {
+          // 只在第一次检查时输出日志，避免重复输出
+          if (_notificationChannelChecked == null) {
+            AppLogger.d('RootShell', '通知渠道已存在 $_notificationChannelId');
+          }
+        }
+        
+        // 标记已检查
+        _notificationChannelChecked = true;
+        
+        // Android 13+ 动态通知权限
+        await androidNotifications.requestNotificationsPermission();
+      } catch (e, stackTrace) {
+        // 如果注册失败，记录错误但不影响应用启�?
+        AppLogger.e('RootShell', '创建通知渠道失败', e, stackTrace);
+        ErrorHandler.handleError(e, stackTrace, userMessage: '通知渠道注册失败');
+      }
     }
   }
 
   Future<void> _initSettings() async {
     await _settingsRepo.init();
     _settingsRepo.addListener(_settingsListener);
-    if (!mounted) return;
+    if (!mounted) {
+      AppLogger.d('RootShell', 'Widget not mounted, skipping settings apply');
+      return;
+    }
     _settingsReady = true;
     _applySettingsSnapshot();
     _handleMonitoringPipeline(_monitoring);
@@ -200,22 +315,35 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       _today = _settingsRepo.today;
       _todayRemindCount = _settingsRepo.todayRemindCount;
     });
+    // 同步自定义姿势开关到仓库（异步，不阻塞UI）
+    unawaited(_customPostureRepository.setUseCustomPostures(_settingsRepo.useCustomPostures));
   }
 
   void _handleMonitoringPipeline(bool monitoringEnabled) {
     if (monitoringEnabled) {
-      if (!_isInBackground && _postureSubscription == null) {
-        _startSensorListening();
+      // 确保原生前台服务已经启动（即使还在 App 前台）
+      _ensureNativeMonitoringStarted();
+      // 前台：启动前台定时器，仅用于根据服务提供的 sideLyingSince 弹出对话框
+      if (!_lifecycleCoordinator.isInBackground) {
+        _startForegroundReminderCheck();
       }
-      if (_isInBackground && !_isFloatingWindowVisible) {
-        unawaited(_showFloatingWindow());
+      if (_lifecycleCoordinator.isInBackground && !_lifecycleCoordinator.isFloatingWindowVisible) {
+        // 显示悬浮窗由 LifecycleCoordinator 管理，这里触发生命周期检�?
+        _lifecycleCoordinator.handleLifecycleChange(
+          AppLifecycleState.paused,
+          monitoringEnabled,
+          _isSideLying,
+        );
       }
     } else {
-      if (_postureSubscription != null) {
-        _stopSensorListening();
-      }
-      if (_isFloatingWindowVisible) {
-        unawaited(_hideFloatingWindow());
+      // 关闭前台定时器
+      _stopForegroundReminderCheck();
+      if (_lifecycleCoordinator.isFloatingWindowVisible) {
+        _lifecycleCoordinator.handleLifecycleChange(
+          AppLifecycleState.resumed,
+          monitoringEnabled,
+          _isSideLying,
+        );
       }
     }
   }
@@ -227,102 +355,32 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       _settingsRepo.removeListener(_settingsListener);
     }
     _postureSubscription?.cancel();
-    unawaited(_postureMonitor.dispose());
-    _checkTimer?.cancel();
-    // 清理悬浮窗
-    if (_isFloatingWindowVisible) {
-      FloatingWindowManager.hideFloatingWindow();
-    }
+    _statsSubscription?.cancel();
+    unawaited(_nativePostureStream.dispose());
+    _stopForegroundReminderCheck();
+    _lifecycleCoordinator.dispose();
+    _reminderController.reset();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     super.didChangeAppLifecycleState(state);
-    // 使用悬浮窗方案：当应用进入后台时，显示悬浮窗保持应用运行
-    if (state == AppLifecycleState.paused || state == AppLifecycleState.inactive) {
-      // 进入后台：如果监测开启，显示悬浮窗并启动原生服务监测
-      _isInBackground = true;
+    // 使用生命周期协调器处理前后台切换
+    _lifecycleCoordinator.handleLifecycleChange(
+      state,
+      _monitoring,
+      _isSideLying,
+    );
+
+    // 根据前后台状态启动/停止前台提醒定时器
+    if (state == AppLifecycleState.resumed) {
       if (_monitoring) {
-        // 停止Flutter层的传感器监听（避免重复）
-        _stopSensorListening();
-        // 显示悬浮窗（原生服务会启动传感器监听）
-        if (!_isFloatingWindowVisible) {
-          _showFloatingWindow();
-        }
+        _startForegroundReminderCheck();
       }
-    } else if (state == AppLifecycleState.resumed) {
-      // 回到前台：停止原生服务监测，使用Flutter层监测
-      _isInBackground = false;
-      // 强制隐藏悬浮窗
-      if (_isFloatingWindowVisible) {
-        _hideFloatingWindow();
-      }
-      // 确保传感器监听正在运行（Flutter层）
-      if (_monitoring && _postureSubscription == null) {
-        _startSensorListening();
-      }
-      // 重新加载统计数据（可能原生服务更新了）
-      _reloadSettingsFromDisk();
-    }
-  }
-  
-  /// 显示悬浮窗（使用原生悬浮窗）
-  Future<void> _showFloatingWindow() async {
-    if (_isFloatingWindowVisible || !_monitoring) return;
-    
-    final granted =
-        await _permissionCoordinator.ensureOverlayPermission(context);
-    if (!granted) return;
-    
-    // 显示原生悬浮窗
-    final success = await FloatingWindowManager.showFloatingWindow();
-    if (success && mounted) {
-      setState(() {
-        _isFloatingWindowVisible = true;
-      });
-      // 更新初始状态
-      FloatingWindowManager.updateFloatingWindowState(_isSideLying);
-    }
-  }
-
-  /// 隐藏悬浮窗
-  Future<void> _hideFloatingWindow() async {
-    if (!_isFloatingWindowVisible) return;
-    await FloatingWindowManager.hideFloatingWindow();
-    if (mounted) {
-      setState(() {
-        _isFloatingWindowVisible = false;
-      });
-    }
-  }
-  
-  /// 更新悬浮窗状态（当侧躺状态改变时调用）
-  void _updateFloatingWindowState() {
-    if (_isFloatingWindowVisible) {
-      FloatingWindowManager.updateFloatingWindowState(_isSideLying);
-    }
-  }
-  
-  Future<void> _reloadSettingsFromDisk() async {
-    if (!_settingsReady) return;
-    await _settingsRepo.refreshFromDisk();
-  }
-
-  /// 通用轻微震动（尊重设置开关）
-  Future<void> _vibrateOnce({int durationMs = 80}) async {
-    if (!_vibrationEnabled) return;
-    final hasVibrator = await Vibration.hasVibrator();
-    if (hasVibrator) {
-      await Vibration.vibrate(duration: durationMs);
-    }
-  }
-
-  Future<void> _vibratePattern(List<int> pattern) async {
-    if (!_vibrationEnabled) return;
-    final hasVibrator = await Vibration.hasVibrator();
-    if (hasVibrator) {
-      await Vibration.vibrate(pattern: pattern);
+    } else if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _stopForegroundReminderCheck();
     }
   }
 
@@ -332,21 +390,41 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       _monitoring = next;
     });
     if (next) {
-      unawaited(_vibrateOnce(durationMs: 60));
+      unawaited(_reminderController.vibrateOnce(
+          durationMs: 60, enabled: _vibrationEnabled));
+      // 监测从关闭切换为开启时，确保原生服务已启动
+      _ensureNativeMonitoringStarted();
     }
     _handleMonitoringPipeline(next);
     unawaited(_settingsRepo.setMonitoring(next));
   }
-  
-  void _startSensorListening() {
-    _postureMonitor.start();
-    _postureSubscription ??=
-        _postureMonitor.stateStream.listen(_handlePostureState);
 
+  /// 前台定时器：每秒检查一次是否需要在前台弹出对话框（不影响服务端逻辑）
+  void _startForegroundReminderCheck() {
     _checkTimer?.cancel();
     _checkTimer = Timer.periodic(const Duration(seconds: 1), (_) {
-      _maybeTriggerReminder();
+      _maybeShowForegroundReminder();
     });
+  }
+
+  void _stopForegroundReminderCheck() {
+    _checkTimer?.cancel();
+    _checkTimer = null;
+  }
+
+  /// 确保原生监测服务已启动：
+  /// - 若尚未启动，则通过显示/隐藏悬浮窗的方式启动前台服务和传感器监听；
+  /// - 若启动失败，不会抛异常，只记录日志。
+  void _ensureNativeMonitoringStarted() {
+    if (_nativeMonitoringEnsured) return;
+    unawaited(() async {
+      try {
+        final shown = await FloatingWindowManager.showFloatingWindow();
+        _nativeMonitoringEnsured = true;
+      } catch (e, stackTrace) {
+        AppLogger.e('RootShell', 'Failed to ensure native monitoring service', e, stackTrace);
+      }
+    }());
   }
 
   void _handlePostureState(PostureState state) {
@@ -357,23 +435,26 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       _sideLyingSince = state.sideLyingSince;
     });
     if (state.isSideLying && !previous) {
-      unawaited(_vibrateOnce(durationMs: 50));
+      // 刚开始侧躺，轻微震动提示
+      unawaited(_reminderController.vibrateOnce(durationMs: 50, enabled: _vibrationEnabled));
+      AppLogger.d('RootShell', 'Side lying started, starting reminder check');
     }
+    
     if (!_isSideLying) {
       _sideLyingSince = null;
+      AppLogger.d('RootShell', 'Side lying ended, resetting timer');
     }
-    _updateFloatingWindowState();
+    
+    _lifecycleCoordinator.updateFloatingWindowState(_isSideLying);
   }
 
   void _stopSensorListening() {
-    _postureMonitor.stop();
-    _postureSubscription?.cancel();
-    _postureSubscription = null;
+    // Flutter 端不再直接监听传感器，仅重置本地姿态/提醒状态
     _checkTimer?.cancel();
     _checkTimer = null;
     _isSideLying = false;
     _sideLyingSince = null;
-    _isReminderDialogShowing = false;
+    _reminderController.reset();
   }
 
   bool _isInDnd(DateTime now) {
@@ -385,167 +466,52 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     if (startMinutes <= endMinutes) {
       return currentMinutes >= startMinutes && currentMinutes < endMinutes;
     } else {
-      // 穿越午夜，例如 23:00–07:00
+      // 穿越午夜，例�?23:00�?7:00
       return currentMinutes >= startMinutes || currentMinutes < endMinutes;
     }
   }
-
-  Future<void> _maybeTriggerReminder() async {
-    if (!_monitoring || !_isSideLying || _sideLyingSince == null) return;
-
-    final now = DateTime.now();
-
-    // 新的一天重置统计
-    if (now.day != _today.day ||
-        now.month != _today.month ||
-        now.year != _today.year) {
-      setState(() {
-        _today = now;
-        _todayRemindCount = 0;
-      });
-      await _settingsRepo.resetTodayIfNeeded(now);
-    }
-
-    if (_isInDnd(now)) return;
-
-    final elapsed = now.difference(_sideLyingSince!).inSeconds;
-    if (elapsed < _thresholdSeconds) return;
-
-    // 如果弹窗已经显示，不再重复弹出，但继续累加提醒次数和震动
-    if (_isReminderDialogShowing) {
-      // 继续累加提醒次数（但不在UI上显示，因为弹窗已存在）
-      setState(() {
-        _todayRemindCount += 1;
-      });
-      await _settingsRepo.incrementTodayRemindCount(at: now);
-      
-      // 继续震动提醒（如果可用且开启）
-      await _vibratePattern(_reminderVibrationPattern);
-      // 重置计时起点，等待下次阈值周期
-      _sideLyingSince = now;
+  
+  /// 仅在前台时，根据服务提供的 sideLyingSince 与本地阈值，决定是否弹出前台对话框。
+  /// 不修改统计次数，也不写入 SharedPreferences，统计仍由服务负责。
+  Future<void> _maybeShowForegroundReminder() async {
+    if (!_monitoring ||
+        !_isSideLying ||
+        _sideLyingSince == null ||
+        _lifecycleCoordinator.isInBackground) {
       return;
     }
 
-    // 避免多次触发：重置起点，下一次需重新满足阈值
-    _sideLyingSince = now;
+    final now = DateTime.now();
+
+    if (_isInDnd(now)) {
+      return;
+    }
+
+    final elapsed = now.difference(_sideLyingSince!).inSeconds;
+    if (elapsed < _thresholdSeconds) {
+      return;
+    }
+
+    // 避免重复弹出多个对话框
+    if (_reminderController.isReminderDialogShowing) {
+      return;
+    }
 
     if (!mounted) return;
 
-    setState(() {
-      _todayRemindCount += 1;
-    });
-    await _settingsRepo.incrementTodayRemindCount(at: now);
-
-    // 震动（如果可用且开启）
-    await _vibratePattern(_reminderVibrationPattern);
-
-    // 根据 App 是否在后台，选择不同的提醒方式
-    if (_isInBackground || !mounted) {
-      // 后台：使用通知提醒
-      await _showBackgroundNotification();
-    } else {
-      // 前台：使用弹窗提醒
-      _showReminderDialog();
-    }
-  }
-
-  /// 后台时显示通知提醒
-  Future<void> _showBackgroundNotification() async {
-    final androidDetails = AndroidNotificationDetails(
-      _reminderNotificationChannel.id,
-      _reminderNotificationChannel.name,
-      channelDescription: _reminderNotificationChannel.description,
-      importance: Importance.high,
-      priority: Priority.high,
-      showWhen: true,
-    );
-
-    const iosDetails = DarwinNotificationDetails(
-      presentAlert: true,
-      presentBadge: true,
-      presentSound: true,
-    );
-
-    final notificationDetails = NotificationDetails(
-      android: androidDetails,
-      iOS: iosDetails,
-    );
-
-    await _notifications.show(
-      1,
-      '姿势不对哦～',
-      '你可能正在侧躺玩手机，注意颈椎健康哦～',
-      notificationDetails,
-    );
-  }
-
-  void _showReminderDialog() {
-    // 如果弹窗已经显示，不再重复弹出
-    if (_isReminderDialogShowing) return;
-    
-    setState(() {
-      _isReminderDialogShowing = true;
-    });
-    
-    showGeneralDialog(
+    await _reminderController.triggerReminder(
       context: context,
-      barrierDismissible: true,
-      barrierLabel: '提醒',
-      pageBuilder: (context, animation, secondaryAnimation) {
-        return const SizedBox.shrink();
+      isInBackground: false,
+      vibrationEnabled: _vibrationEnabled,
+      onDialogClosed: () {
+        // 关闭后，从现在重新计时，避免立刻再次触发
+        _sideLyingSince = DateTime.now();
       },
-      transitionBuilder: (context, animation, secondary, child) {
-        final curved = CurvedAnimation(
-          parent: animation,
-          curve: Curves.easeOutCubic,
-        );
-        return Stack(
-          children: [
-            // 毛玻璃背景
-            Positioned.fill(
-              child: BackdropFilter(
-                filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
-                child: Container(
-                  color: Colors.black.withValues(alpha: 0.4),
-                ),
-              ),
-            ),
-            Center(
-              child: FadeTransition(
-                opacity: curved,
-                child: ScaleTransition(
-                  scale: Tween<double>(begin: 0.9, end: 1.0).animate(curved),
-                  child: ReminderDialog(
-                    onClose: () {
-                      Navigator.of(context).pop();
-                      // 用户点击"知道了"后，重置状态，允许下次提醒
-                      setState(() {
-                        _isReminderDialogShowing = false;
-                        // 重置侧躺计时起点，这样用户如果继续保持侧躺，需要重新满足阈值才会再次提醒
-                        _sideLyingSince = DateTime.now();
-                      });
-                    },
-                  ),
-                ),
-              ),
-            ),
-          ],
-        );
-      },
-    ).then((_) {
-      // 对话框关闭时的回调（无论是点击按钮还是点击外部关闭）
-      if (mounted) {
-        setState(() {
-          _isReminderDialogShowing = false;
-          // 重置侧躺计时起点
-          _sideLyingSince = DateTime.now();
-        });
-      }
-    });
+    );
   }
 
 
-  // —— 设置项的更新回调 ——
+  // —�?设置项的更新回调 —�?
 
   void _updateVibration(bool value) {
     setState(() {
@@ -584,8 +550,17 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
     unawaited(_settingsRepo.setDndEnabled(value));
   }
 
+  void _updateUseCustomPostures(bool value) {
+    // 同步到本地设置与自定义姿势仓库
+    unawaited(_customPostureRepository.setUseCustomPostures(value));
+    unawaited(_settingsRepo.setUseCustomPostures(value));
+  }
+
   @override
   Widget build(BuildContext context) {
+    AppLogger.d('RootShell', '=== build() called ===');
+    AppLogger.d('RootShell', 'Current index: $_currentIndex, monitoring: $_monitoring, remindCount: $_todayRemindCount');
+    
     final pages = [
       HomePage(
         monitoring: _monitoring,
@@ -605,6 +580,8 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
         onDndStartChanged: _updateDndStart,
         onDndEndChanged: _updateDndEnd,
         onDndEnabledChanged: _updateDndEnabled,
+        useCustomPostures: _customPostureRepository.useCustomPostures,
+        onUseCustomPosturesChanged: _updateUseCustomPostures,
       ),
     ];
 
@@ -613,9 +590,16 @@ class _RootShellState extends State<RootShell> with WidgetsBindingObserver {
       bottomNavigationBar: _FrostedBottomNavBar(
         currentIndex: _currentIndex,
         onIndexChanged: (index) {
-          setState(() {
-            _currentIndex = index;
-          });
+          AppLogger.d('RootShell', '=== Navigation changed ===');
+          AppLogger.d('RootShell', 'Current index: $_currentIndex -> New index: $index');
+          try {
+            setState(() {
+              _currentIndex = index;
+            });
+            AppLogger.d('RootShell', 'Navigation setState completed');
+          } catch (e, stackTrace) {
+            AppLogger.e('RootShell', 'Error in navigation setState', e, stackTrace);
+          }
         },
       ),
     );
@@ -648,9 +632,9 @@ class _FrostedBottomNavBar extends StatelessWidget {
           child: Container(
             height: 64,
             decoration: BoxDecoration(
-            color: Colors.black.withValues(alpha: 0.45),
+            color: Colors.black.withOpacity(0.45),
               border: Border.all(
-              color: Colors.white.withValues(alpha: 0.14),
+              color: Colors.white.withOpacity(0.14),
               ),
             ),
             child: Row(
@@ -661,7 +645,11 @@ class _FrostedBottomNavBar extends StatelessWidget {
                 return Expanded(
                   child: GestureDetector(
                     behavior: HitTestBehavior.translucent,
-                    onTap: () => onIndexChanged(index),
+                    onTap: () {
+                      AppLogger.d('RootShell', '=== Navigation item tapped ===');
+                      AppLogger.d('RootShell', 'Tapped index: $index, current: $currentIndex');
+                      onIndexChanged(index);
+                    },
                     child: AnimatedContainer(
                       duration: const Duration(milliseconds: 220),
                       curve: Curves.easeOutCubic,
@@ -677,7 +665,7 @@ class _FrostedBottomNavBar extends StatelessWidget {
                             size: selected ? 26 : 22,
                             color: selected
                                 ? Colors.white
-                                : Colors.white.withValues(alpha: 0.6),
+                                : Colors.white.withOpacity(0.6),
                           ),
                           const SizedBox(height: 4),
                           AnimatedDefaultTextStyle(
@@ -688,7 +676,7 @@ class _FrostedBottomNavBar extends StatelessWidget {
                                   selected ? FontWeight.w600 : FontWeight.w400,
                               color: selected
                                   ? Colors.white
-                                  : Colors.white.withValues(alpha: 0.6),
+                                  : Colors.white.withOpacity(0.6),
                             ),
                             child: Text(item.label),
                           ),
@@ -714,7 +702,7 @@ class _NavItem {
 
 /// 免打扰时间选择器小卡片
 /// 提醒弹窗内容卡片
-// 注意：旧的Flutter Overlay悬浮窗组件已移除，现在使用原生Android悬浮窗
-// 原生悬浮窗可以在其他应用上显示，提供更好的后台监测体验
+// 注意：旧的Flutter Overlay悬浮窗组件已移除，现在使用原生Android悬浮�?
+// 原生悬浮窗可以在其他应用上显示，提供更好的后台监测体�?
 
 

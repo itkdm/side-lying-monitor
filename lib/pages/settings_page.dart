@@ -1,5 +1,6 @@
-import 'package:flutter/material.dart';
-
+﻿import 'package:flutter/material.dart';
+import 'package:flutter_application_1/services/custom_posture_repository.dart';
+import 'package:flutter_application_1/pages/custom_posture_page.dart';
 import '../widgets/glass_card.dart';
 
 /// 设置页：震动开关、时间阈值、免打扰时段
@@ -16,6 +17,8 @@ class SettingsPage extends StatelessWidget {
     required this.onDndStartChanged,
     required this.onDndEndChanged,
     required this.onDndEnabledChanged,
+    required this.useCustomPostures,
+    required this.onUseCustomPosturesChanged,
   });
 
   final bool vibrationEnabled;
@@ -28,6 +31,8 @@ class SettingsPage extends StatelessWidget {
   final ValueChanged<TimeOfDay> onDndStartChanged;
   final ValueChanged<TimeOfDay> onDndEndChanged;
   final ValueChanged<bool> onDndEnabledChanged;
+  final bool useCustomPostures;
+  final ValueChanged<bool> onUseCustomPosturesChanged;
 
   String _formatTime(TimeOfDay time) {
     final hour = time.hour.toString().padLeft(2, '0');
@@ -221,6 +226,44 @@ class SettingsPage extends StatelessWidget {
                 ),
               ),
               const SizedBox(height: 16),
+              AnimatedBuilder(
+                animation: CustomPostureRepository.instance,
+                builder: (context, _) {
+                  final repo = CustomPostureRepository.instance;
+                  return GlassCard(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                          children: [
+                            Text(
+                              '自定义侧躺姿势',
+                              style: theme.textTheme.titleMedium?.copyWith(
+                                color: Colors.white,
+                              ),
+                            ),
+                        Switch.adaptive(
+                          value: useCustomPostures,
+                          onChanged: onUseCustomPosturesChanged,
+                        ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          '为侧躺录制自定义姿势数据进行监测，或使用默认系统算法',
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: Colors.white70,
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+                        _CustomPostureList(),
+                      ],
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
               GlassCard(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -273,10 +316,10 @@ class _DndTimeChip extends StatelessWidget {
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(14),
             color: Colors.white
-                .withValues(alpha: enabled ? 0.06 : 0.02),
+                .withOpacity(enabled ? 0.06 : 0.02),
             border: Border.all(
               color: Colors.white
-                  .withValues(alpha: enabled ? 0.18 : 0.08),
+                  .withOpacity(enabled ? 0.18 : 0.08),
             ),
           ),
           child: Column(
@@ -296,7 +339,7 @@ class _DndTimeChip extends StatelessWidget {
                     timeText,
                     style: Theme.of(context).textTheme.titleMedium?.copyWith(
                           color: Colors.white
-                              .withValues(alpha: enabled ? 1 : 0.5),
+                              .withOpacity(enabled ? 1 : 0.5),
                           fontWeight: FontWeight.w600,
                         ),
                   ),
@@ -312,5 +355,201 @@ class _DndTimeChip extends StatelessWidget {
         ),
       ),
     );
+  }
+}
+
+/// 自定义姿势列表与操作
+class _CustomPostureList extends StatefulWidget {
+  @override
+  State<_CustomPostureList> createState() => _CustomPostureListState();
+}
+
+class _CustomPostureListState extends State<_CustomPostureList> {
+  final _repository = CustomPostureRepository.instance;
+
+  @override
+  void initState() {
+    super.initState();
+    _repository.addListener(_onRepositoryChanged);
+  }
+
+  @override
+  void dispose() {
+    _repository.removeListener(_onRepositoryChanged);
+    super.dispose();
+  }
+
+  void _onRepositoryChanged() {
+    setState(() {});
+  }
+
+  Future<void> _addPosture() async {
+    final result = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (context) => const CustomPosturePage(),
+      ),
+    );
+    if (result == true && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('姿势已添加')),
+      );
+    }
+  }
+
+  Future<void> _deletePosture(String id, String name) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('删除姿势'),
+        content: Text('确定要删除姿势 "$name" 吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('删除', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _repository.removeCustomPosture(id);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('姿势已删除')),
+        );
+      }
+    }
+  }
+
+  Future<void> _resetToDefault() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('恢复默认算法'),
+        content: const Text('确定要清除所有自定义姿势并恢复默认检测算法吗？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('确定', style: TextStyle(color: Colors.red)),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      await _repository.clearAllCustomPostures();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('已恢复默认算法')),
+        );
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final postures = _repository.customPostures;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (postures.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 16),
+            child: Text(
+                      '暂无自定义侧躺姿势',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: Colors.white54,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          )
+        else
+          ...postures.map(
+            (posture) => Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(12),
+                  color: Colors.white.withOpacity(0.05),
+                  border: Border.all(
+                    color: Colors.white.withOpacity(0.1),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            posture.name,
+                            style: theme.textTheme.bodyMedium?.copyWith(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            '创建于 ${_formatDate(posture.createdAt)}',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: Colors.white54,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    IconButton(
+                      icon: const Icon(Icons.delete_outline, color: Colors.red),
+                      onPressed: () => _deletePosture(posture.id, posture.name),
+                      tooltip: '删除',
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: OutlinedButton.icon(
+                onPressed: _addPosture,
+                icon: const Icon(Icons.add),
+                label: const Text('添加姿势'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.white,
+                  side: BorderSide(color: Colors.white.withOpacity(0.3)),
+                ),
+              ),
+            ),
+            const SizedBox(width: 8),
+            if (postures.isNotEmpty)
+              OutlinedButton(
+                onPressed: _resetToDefault,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: Colors.red,
+                  side: const BorderSide(color: Colors.red),
+                ),
+                child: const Text('恢复默认'),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+
+  String _formatDate(DateTime date) {
+    return '${date.year}-${date.month.toString().padLeft(2, '0')}-${date.day.toString().padLeft(2, '0')}';
   }
 }

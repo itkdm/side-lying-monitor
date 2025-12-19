@@ -1,4 +1,4 @@
-import 'dart:ui';
+﻿import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -20,14 +20,14 @@ class GlassCard extends StatelessWidget {
           decoration: BoxDecoration(
             gradient: LinearGradient(
               colors: [
-                Colors.white.withValues(alpha: 0.08),
-                Colors.white.withValues(alpha: 0.02),
+                Colors.white.withOpacity(0.08),
+                Colors.white.withOpacity(0.02),
               ],
               begin: Alignment.topLeft,
               end: Alignment.bottomRight,
             ),
             border: Border.all(
-              color: Colors.white.withValues(alpha: 0.16),
+              color: Colors.white.withOpacity(0.16),
               width: 1,
             ),
           ),
