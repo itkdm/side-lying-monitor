@@ -151,4 +151,4 @@ flutter build appbundle --release
 
 ---
 
-**最后更新**：2025-01-28
+**最后更新**：2026-01-01
