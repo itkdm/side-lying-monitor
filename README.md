@@ -1,51 +1,154 @@
-从你的需求描述和文件内容来看，你遇到的问题是关于 **Flutter** 开发的应用无法在 Android 系统上实现持续的后台监测。你提到的主要挑战是，当应用不在前台时，监测功能就无法继续运行，尤其是在回到主页或打开其他应用时，监测功能会停止。
+# Side Lying Monitor - 智能侧躺监测与健康提醒应用
 
-针对这个问题，提供以下建议：
+> 帮助您养成良好的手机使用习惯，保护颈椎健康
 
-### 1. **使用后台服务（Android）**
+[![GitHub](https://img.shields.io/badge/GitHub-itkdm-blue)](https://github.com/itkdm/side-lying-monitor)
+[![Gitee](https://img.shields.io/badge/Gitee-itkdm-red)](https://gitee.com/itkdm/side-lying-monitor)
 
-Flutter 本身并不直接支持后台持续任务，尤其是当应用进入后台时。你可以使用原生 Android 的后台服务来处理持续的监测工作。具体方案如下：
+## 📱 应用简介
 
-* **Android原生的后台服务**：你可以通过在 Flutter 项目中使用 [Flutter插件](https://pub.dev/packages/flutter_background_service) 来启动一个后台服务，确保即使应用不在前台，监测功能也能够持续运行。
+Side Lying Monitor（枕边哨）是一款智能侧躺监测应用，通过实时监测手机姿态，帮助用户避免长时间侧躺使用手机，从而保护颈椎健康。
 
-  * **`flutter_background_service` 插件**：这个插件可以帮助你在 Android 上启动一个后台服务，它可以在应用退到后台时继续运行。你可以在后台服务中监听传感器数据（加速度传感器等）来监测用户的姿势。
+### 核心功能
 
-  * **`foreground service`**：如果是非常重要的监测任务，考虑使用“前台服务”来保证持续监测，即使应用被最小化。前台服务会显示一个常驻通知，让用户知道正在进行某些重要操作。
+- ✅ **实时姿态监测**：通过传感器实时监测手机姿态，识别侧躺姿势
+- ✅ **智能提醒**：检测到侧躺姿势后，通过震动和通知提醒用户
+- ✅ **自定义姿势**：支持录制和识别自定义姿势
+- ✅ **免打扰模式**：支持设置免打扰时间段
+- ✅ **统计功能**：记录每日提醒次数
+- ✅ **主题切换**：支持深色/浅色主题切换
+- ✅ **后台运行**：支持后台持续监测（Android）
 
-* **实现方式：**
+## 🛠️ 技术栈
 
-  * 在应用启动时，启动一个后台服务来监听传感器数据。
-  * 在后台服务中，进行姿态监测的计算，并触发提醒（例如，通过通知或震动）。
-  * 注意：安卓系统有严格的权限要求，尤其是在后台运行时。你需要确保应用请求了正确的权限，并在 AndroidManifest.xml 文件中声明这些权限（如 `ACCESS_FINE_LOCATION` 和 `FOREGROUND_SERVICE`）。
+- **框架**：Flutter 3.24.3
+- **语言**：Dart 3.5.3
+- **主要依赖**：
+  - `sensors_plus` - 传感器数据采集
+  - `vibration` - 震动反馈
+  - `shared_preferences` - 本地数据存储
+  - `flutter_local_notifications` - 本地通知
 
-### 2. **优化后台监测的电池消耗**
+## 📦 项目结构
 
-由于持续监听传感器会消耗电量，你可以通过以下几种方式来优化：
+```
+lib/
+├── controllers/          # 控制器（提醒、生命周期）
+├── models/              # 数据模型
+├── pages/               # 页面组件
+├── services/           # 服务层（监测、设置、通知等）
+├── utils/              # 工具类
+└── widgets/            # 通用组件
+```
 
-* **降低传感器采样频率**：当应用处于后台时，可以适当降低传感器采样频率，避免过高的功耗。
-* **智能触发**：根据用户是否在使用设备、是否处于静止状态来判断是否需要监测。比如，设备在长时间不动时，可以降低监测频率或完全暂停监测。
+## 🚀 快速开始
 
-### 3. **前台通知与后台运行结合**
+### 环境要求
 
-如果你希望在监测到侧躺姿势时，仍然能够提醒用户，但应用已经退到后台，可以考虑在后台通过 **通知** 来提醒用户。
+- Flutter SDK >= 3.5.0
+- Dart SDK >= 3.5.0
+- Android Studio / VS Code
+- Android SDK (Android 8.0+)
 
-* **Android 通知**：在监测到侧躺时，通过前台通知提醒用户，确保通知会一直显示，且用户可以看到提醒。你可以设置一个“保持通知”功能，使得即便应用不在前台运行，通知也能保持活跃。
+### 安装步骤
 
-### 4. **针对 iOS 的限制**
+1. **克隆项目**
 
-iOS 系统对于后台任务的限制非常严格，尤其是后台传感器数据的采集。因此，如果你也希望在 iOS 上实现类似的后台监测，你需要考虑：
+   **GitHub:**
+   ```bash
+   git clone git@github.com:itkdm/side-lying-monitor.git
+   cd side-lying-monitor
+   ```
 
-* **使用 iOS 的后台任务 API**：你可以利用 `Background Fetch` 或 `Push Notifications` 来尝试在后台触发事件，但是 iOS 的权限要求和后台运行限制可能会影响监测的精度和频率。
-* **限制后台监测的功能**：如果后台监测无法持续进行，可以考虑仅在用户主动打开应用并处于前台时进行监测，而不强求在后台运行。
+   **Gitee:**
+   ```bash
+   git clone git@gitee.com:itkdm/side-lying-monitor.git
+   cd side-lying-monitor
+   ```
 
-### 5. **Flutter 代码优化建议**
+2. **安装依赖**
+   ```bash
+   flutter pub get
+   ```
 
-* **使用 `flutter_local_notifications` 插件** 来处理本地通知，确保在后台时仍能向用户发送提醒。
-* **依赖原生代码**：对于无法通过 Flutter 插件直接实现的后台监测功能，可能需要通过平台通道（Platform Channels）来调用原生 Android/iOS 功能，实现更复杂的后台服务。
+3. **运行项目**
+   ```bash
+   flutter run
+   ```
 
-### 总结：
+### 构建发布版本
 
-* **Android 解决方案**：通过 `flutter_background_service` 插件或原生的前台服务确保应用在后台也能持续监测，并触发通知提醒用户。
-* **iOS 解决方案**：由于 iOS 系统的限制，后台监测可能需要通过后台任务 API 或使用通知来提醒用户。
+**Android APK**
+```bash
+flutter build apk --release
+```
 
-这个方案应该能帮助你实现应用在后台的持续监测，确保即使应用退到后台，也能够保持有效的姿势监测和提醒。
+**Android App Bundle**
+```bash
+flutter build appbundle --release
+```
+
+## 📝 配置说明
+
+### Android 签名配置
+
+1. 复制 `android/key.properties.example` 为 `android/key.properties`
+2. 填写实际的签名信息：
+   ```properties
+   storePassword=你的密钥库密码
+   keyPassword=你的密钥密码
+   keyAlias=publish-key
+   storeFile=app/publish-key.jks
+   ```
+3. 将签名密钥文件放置在 `android/app/publish-key.jks`
+
+> ⚠️ **重要**：`key.properties` 和 `publish-key.jks` 文件已添加到 `.gitignore`，不会提交到版本控制。
+
+## 🔧 开发说明
+
+### 架构设计
+
+项目采用分层架构：
+- **UI层**：Flutter Widgets，负责用户界面展示
+- **控制器层**：管理业务逻辑和状态
+- **服务层**：提供核心功能服务（监测、设置、通知等）
+- **原生层**：Android 原生服务，负责后台监测和悬浮窗
+
+### 核心服务
+
+- `PostureMonitor` - 姿态监测服务
+- `SettingsRepository` - 设置管理
+- `ReminderController` - 提醒控制
+- `LifecycleCoordinator` - 生命周期协调
+- `FloatingWindowManager` - 悬浮窗管理
+
+## 📄 许可证
+
+本项目采用私有许可证，未经授权不得使用。
+
+## 🤝 贡献
+
+欢迎提交 Issue 和 Pull Request。
+
+## ⚠️ 注意事项
+
+1. **权限要求**：
+   - Android 需要悬浮窗权限（用于后台监测）
+   - 需要通知权限（用于提醒）
+   - 需要忽略电池优化权限（保证后台运行）
+
+2. **兼容性**：
+   - 最低支持 Android 8.0 (API 26)
+   - 推荐 Android 10.0+ (API 29)
+
+3. **性能优化**：
+   - 传感器采样频率已优化，降低电池消耗
+   - 使用 WakeLock 保证后台服务稳定运行
+
+## 📞 联系方式
+
+如有问题或建议，请通过 Issue 反馈。
+
+---
+
+**最后更新**：2025-01-28
